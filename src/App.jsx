@@ -91,7 +91,8 @@ function SplashScreen({ onComplete }) {
 }
                                                                // Install PWA Button Component
 function InstallButton() {
-  const [deferredPrompt, setDeferredPrompt] = useState(null)     const [showInstall, setShowInstall] = useState(false)        
+  const [deferredPrompt, setDeferredPrompt] = useState(null)
+  const [showInstall, setShowInstall] = useState(false)        
   useEffect(() => {
     const handler = (e) => {
       e.preventDefault()
