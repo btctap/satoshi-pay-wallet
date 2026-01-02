@@ -200,8 +200,8 @@ function PendingTokensView({
           <p style={{ textAlign: 'center', opacity: 0.6 }}>
             No pending tokens
           </p>
-          <p style={{ fontSize: '0.85em', opacity: 0.5, marginTop: '0.5em' }}>
-            Generated tokens that haven't been sent will appear here
+          <p style={{ fontSize: '0.85em', opacity: 0.5, marginTop: '0.5em', textAlign: 'center' }}>
+            Unsent tokens will appear here until claimed by recipient
           </p>
         </div>
       ) : (
@@ -212,7 +212,7 @@ function PendingTokensView({
                 {pending.amount} sats
               </div>
               <div style={{ fontSize: '0.8em', opacity: 0.6 }}>
-                {new Date(pending.timestamp).toLocaleString()}
+                Created {new Date(pending.timestamp).toLocaleString()}
               </div>
             </div>
 
@@ -249,7 +249,7 @@ function PendingTokensView({
             </div>
 
             <p style={{ fontSize: '0.75em', opacity: 0.5, marginTop: '0.5em' }}>
-              💡 Reclaim to add back to your balance, or copy to send
+              💡 This token will auto-delete once claimed by recipient
             </p>
           </div>
         ))
@@ -650,7 +650,6 @@ function SendViaLightning({
 
       addTransaction('send', decodedInvoice.amount, 'Paid Lightning invoice', mintUrl)
 
-      // Vibrate on successful send
       vibrate([100, 50, 100])
 
       setSuccess(`✅ Sent ${decodedInvoice.amount} sats via Lightning!`)
@@ -805,11 +804,9 @@ function App() {
   const [showScanner, setShowScanner] = useState(false)
   const [scanMode, setScanMode] = useState(null)
 
-  // Pending tokens state
   const [pendingTokens, setPendingTokens] = useState([])
   const [showPendingTokens, setShowPendingTokens] = useState(false)
 
-  // Load pending tokens on mount
   useEffect(() => {
     const loadPendingTokens = () => {
       try {
@@ -824,13 +821,65 @@ function App() {
     loadPendingTokens()
   }, [])
 
-  // Save pending token
-  const savePendingToken = (token, amount, mintUrl) => {
+  // ✅ FIX 1: Check pending tokens for spending (wait 30 seconds, check token age)
+  useEffect(() => {
+    if (pendingTokens.length === 0 || !wallet) return
+
+    const checkPendingTokensSpending = async () => {
+      for (const pending of pendingTokens) {
+        try {
+          if (!pending.proofs || pending.proofs.length === 0) continue
+
+          // ✅ Skip tokens that were just created (less than 10 seconds old)
+          const tokenAge = Date.now() - new Date(pending.timestamp).getTime()
+          if (tokenAge < 10000) {
+            console.log(`Skipping new token ${pending.id} (only ${Math.round(tokenAge/1000)}s old)`)
+            continue
+          }
+
+          const mint = new CashuMint(pending.mintUrl)
+          const tempWallet = new CashuWallet(mint)
+
+          const spentStates = await tempWallet.checkProofsSpent(pending.proofs)
+          
+          const allSpent = spentStates.every(state => {
+            return state.spentProof?.spent === true || 
+                   state.spent === true || 
+                   state.state === 'SPENT'
+          })
+
+          if (allSpent) {
+            console.log(`✅ Token ${pending.id} was claimed!`)
+            
+            const updated = pendingTokens.filter(t => t.id !== pending.id)
+            setPendingTokens(updated)
+            localStorage.setItem('pending_tokens', JSON.stringify(updated))
+
+            vibrate([100, 50, 100])
+            setSuccess(`✅ ${pending.amount} sats token was claimed!`)
+            setTimeout(() => setSuccess(''), 3000)
+          }
+
+        } catch (err) {
+          console.error(`Error checking token ${pending.id}:`, err)
+        }
+      }
+    }
+
+    // ✅ DON'T check immediately - wait 30 seconds before first check
+    const interval = setInterval(checkPendingTokensSpending, 30000)
+
+    return () => clearInterval(interval)
+  }, [pendingTokens, wallet])
+
+  // ✅ Save pending token with proofs
+  const savePendingToken = (token, amount, mintUrl, proofs) => {
     const pending = {
       id: Date.now(),
       token,
       amount,
       mintUrl,
+      proofs,
       timestamp: new Date().toISOString()
     }
     const updated = [pending, ...pendingTokens]
@@ -838,14 +887,16 @@ function App() {
     localStorage.setItem('pending_tokens', JSON.stringify(updated))
   }
 
-  // Remove pending token
   const removePendingToken = (tokenId) => {
-    const updated = pendingTokens.filter(t => t.id !== tokenId)
-    setPendingTokens(updated)
-    localStorage.setItem('pending_tokens', JSON.stringify(updated))
+    if (confirm('Delete this token? This cannot be undone.')) {
+      const updated = pendingTokens.filter(t => t.id !== tokenId)
+      setPendingTokens(updated)
+      localStorage.setItem('pending_tokens', JSON.stringify(updated))
+      setSuccess('Token deleted')
+      setTimeout(() => setSuccess(''), 2000)
+    }
   }
 
-  // Reclaim a pending token
   const reclaimPendingToken = async (pendingToken) => {
     try {
       setLoading(true)
@@ -865,7 +916,9 @@ function App() {
         saveProofsForMint(tokenMintUrl, allProofs)
         calculateAllBalances()
 
-        removePendingToken(pendingToken.id)
+        const updated = pendingTokens.filter(t => t.id !== pendingToken.id)
+        setPendingTokens(updated)
+        localStorage.setItem('pending_tokens', JSON.stringify(updated))
 
         vibrate([200])
 
@@ -873,7 +926,14 @@ function App() {
         setTimeout(() => setSuccess(''), 2000)
       }
     } catch (err) {
-      setError(`Could not reclaim: ${err.message}`)
+      if (err.message?.includes('already spent') || err.message?.includes('already claimed')) {
+        setError('Token already claimed by recipient')
+        const updated = pendingTokens.filter(t => t.id !== pendingToken.id)
+        setPendingTokens(updated)
+        localStorage.setItem('pending_tokens', JSON.stringify(updated))
+      } else {
+        setError(`Could not reclaim: ${err.message}`)
+      }
     } finally {
       setLoading(false)
     }
@@ -938,7 +998,6 @@ function App() {
         addTransaction('receive', pending.amount, 'Minted via Lightning', pending.mintUrl)
         clearPendingQuote()
 
-        // Vibrate on successful receive
         vibrate([200])
 
         setSuccess(`🎉 Received ${pending.amount} sats!`)
@@ -1051,7 +1110,6 @@ function App() {
       const mint = new CashuMint(mintUrl)
       const newWallet = new CashuWallet(mint)
 
-      // Try to get mint info, but don't fail if offline
       try {
         const info = await mint.getInfo()
         setMintInfo(info)
@@ -1300,15 +1358,11 @@ function App() {
       setGeneratedToken(token)
       setGeneratedQR(qr)
 
-      // Save as pending token
-      savePendingToken(token, amount, mintUrl)
+      savePendingToken(token, amount, mintUrl, proofsToSend)
 
       addTransaction('send', amount, 'Ecash token generated (pending)', mintUrl)
 
-      // Vibrate on successful generation
-      vibrate([100, 50, 100])
-
-      setSuccess('Token generated!')
+      setSuccess('Token generated! Copy to send.')
       setSendAmount('')
 
     } catch (err) {
@@ -1367,7 +1421,6 @@ function App() {
       const receivedAmount = proofs.reduce((sum, p) => sum + (p.amount || 0), 0)
       addTransaction('receive', receivedAmount, 'Ecash token received', detectedMintUrl)
 
-      // Vibrate on successful receive
       vibrate([200])
 
       setSuccess(`✅ Received ${receivedAmount} sats!`)
@@ -1389,6 +1442,7 @@ function App() {
     }
   }
 
+  // ✅ FIX 2: Copy to clipboard without vibration
   const copyToClipboard = async (text, label) => {
     try {
       await navigator.clipboard.writeText(text)
@@ -1414,6 +1468,7 @@ function App() {
 
       document.body.removeChild(textArea)
     }
+    // ✅ NO vibrate() call here
   }
 
   const handleResetWallet = (specificMint = null) => {
@@ -1448,7 +1503,6 @@ function App() {
 
   const currentMintBalance = balances[mintUrl] || 0
 
-  // Show splash screen on first load
   if (showSplash) {
     return <SplashScreen onComplete={() => setShowSplash(false)} />
   }
@@ -1463,7 +1517,6 @@ function App() {
     )
   }
 
-  // Pending tokens page
   if (showPendingTokens) {
     return (
       <PendingTokensView
@@ -1476,7 +1529,6 @@ function App() {
     )
   }
 
-  // Settings page
   if (showMintSettings) {
     return (
       <div className="app">
@@ -1570,7 +1622,6 @@ function App() {
     )
   }
 
-  // History page
   if (showHistoryPage) {
     return (
       <div className="app">
@@ -1620,7 +1671,6 @@ function App() {
     )
   }
 
-  // Send page
   if (showSendPage) {
     return (
       <div className="app">
@@ -1718,6 +1768,9 @@ function App() {
                 <button className="copy-btn" onClick={() => copyToClipboard(generatedToken, 'Token')}>
                   📋 Copy Token
                 </button>
+                <p style={{ fontSize: '0.75em', opacity: 0.5, marginTop: '0.5em', textAlign: 'center' }}>
+                  💡 Token will auto-clear once recipient claims it
+                </p>
               </div>
             )}
 
@@ -1732,7 +1785,6 @@ function App() {
     )
   }
 
-  // Receive page
   if (showReceivePage) {
     return (
       <div className="app">
@@ -1813,7 +1865,6 @@ function App() {
     )
   }
 
-  // Main page
   return (
     <div className="app">
       <InstallButton />
