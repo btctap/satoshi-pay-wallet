@@ -25,12 +25,8 @@ const generateWalletSeed = () => {
 }
 
 const deriveMasterKey = (seed) => {
-  return mnemonicToSeedSync(seed)  // Returns Uint8Array for wallet
-}
-
-const deriveEncryptionKey = (seed) => {
   const seedBuffer = mnemonicToSeedSync(seed)
-  return CryptoJS.SHA256(seedBuffer.toString('hex')).toString()  // For encryption
+  return CryptoJS.SHA256(seedBuffer.toString('hex')).toString()
 }
 
 const encryptProofs = (proofs, masterKey) => {
@@ -369,10 +365,9 @@ function RestoreWallet({ onRestore, onCancel }) {
       setError('')
 
       const cleanSeed = seedInput.trim().toLowerCase().replace(/\s+/g, ' ')
-      const words = cleanSeed.split(' ')
       
-      if (words.length < 12) {
-        throw new Error('Recovery phrase must be at least 12 words.')
+      if (!validateMnemonic(cleanSeed)) {
+        throw new Error('Invalid recovery phrase. Please check your words.')
       }
 
       await onRestore(cleanSeed)
@@ -412,50 +407,23 @@ function RestoreWallet({ onRestore, onCancel }) {
           </div>
         )}
 
-        <div style={{ position: 'relative', marginBottom: '1em' }}>
-          <textarea
-            placeholder="Enter your 12 recovery words separated by spaces"
-            value={seedInput}
-            onChange={(e) => setSeedInput(e.target.value)}
-            rows={4}
-            style={{
-              width: '100%',
-              padding: '0.8em',
-              paddingRight: '3.5em',
-              fontSize: '0.9em',
-              background: 'rgba(255, 255, 255, 0.05)',
-              border: '1px solid rgba(255, 255, 255, 0.1)',
-              borderRadius: '8px',
-              color: 'white',
-              resize: 'vertical'
-            }}
-          />
-          <button
-            onClick={async () => {
-              try {
-                const text = await navigator.clipboard.readText()
-                setSeedInput(text.trim())
-                vibrate([50])
-              } catch (err) {
-                setError('Failed to paste from clipboard')
-              }
-            }}
-            style={{
-              position: 'absolute',
-              right: '8px',
-              top: '8px',
-              background: 'rgba(255, 215, 0, 0.2)',
-              border: '1px solid rgba(255, 215, 0, 0.3)',
-              borderRadius: '6px',
-              color: '#FFD700',
-              padding: '0.5em 0.8em',
-              fontSize: '0.85em',
-              cursor: 'pointer'
-            }}
-          >
-            📋 Paste
-          </button>
-        </div>
+        <textarea
+          placeholder="Enter your 12 recovery words separated by spaces"
+          value={seedInput}
+          onChange={(e) => setSeedInput(e.target.value)}
+          rows={4}
+          style={{
+            width: '100%',
+            padding: '0.8em',
+            fontSize: '0.9em',
+            background: 'rgba(255, 255, 255, 0.05)',
+            border: '1px solid rgba(255, 255, 255, 0.1)',
+            borderRadius: '8px',
+            color: 'white',
+            resize: 'vertical',
+            marginBottom: '1em'
+          }}
+        />
 
         <button
           className="primary-btn"
@@ -1189,7 +1157,6 @@ function App() {
   const [showRestoreWallet, setShowRestoreWallet] = useState(false)
   const [isNewWallet, setIsNewWallet] = useState(false)
   const [masterKey, setMasterKey] = useState('')
-  const [bip39Seed, setBip39Seed] = useState(null)  // Add this line
 
   // ✅ NEW: Initialize or restore wallet on mount
   useEffect(() => {
@@ -1198,10 +1165,8 @@ function App() {
       
       if (existingSeed) {
         // Existing wallet - derive master key
-        const seed = deriveMasterKey(existingSeed)
-        const encKey = deriveEncryptionKey(existingSeed)
-        setBip39Seed(seed)
-        setMasterKey(encKey)
+        const key = deriveMasterKey(existingSeed)
+        setMasterKey(key)
         setSeedPhrase(existingSeed)
         loadCustomMints()
         initWallet()
@@ -1225,10 +1190,8 @@ function App() {
   const handleSeedBackupConfirm = () => {
     localStorage.setItem('wallet_seed', seedPhrase)
     localStorage.setItem('wallet_backed_up', 'true')
-    const seed = deriveMasterKey(seedPhrase)
-    const encKey = deriveEncryptionKey(seedPhrase)
-    setBip39Seed(seed)
-    setMasterKey(encKey)
+    const key = deriveMasterKey(seedPhrase)
+    setMasterKey(key)
     setShowSeedBackup(false)
     setIsNewWallet(false)
     
@@ -1254,10 +1217,8 @@ function App() {
     localStorage.setItem('wallet_backed_up', 'true')
     setSeedPhrase(restoredSeed)
     
-    const seed = deriveMasterKey(restoredSeed)
-    const encKey = deriveEncryptionKey(restoredSeed)
-    setBip39Seed(seed)
-    setMasterKey(encKey)
+    const key = deriveMasterKey(restoredSeed)
+    setMasterKey(key)
     
     setShowRestoreWallet(false)
     
@@ -1299,7 +1260,7 @@ function App() {
           }
 
           const mint = new CashuMint(pending.mintUrl)
-          const tempWallet = new CashuWallet(mint, { bip39seed: bip39Seed })
+          const tempWallet = new CashuWallet(mint)
 
           const spentStates = await tempWallet.checkProofsSpent(pending.proofs)
 
@@ -1311,11 +1272,6 @@ function App() {
 
           if (allSpent) {
             console.log(`✅ Token ${pending.id} was claimed!`)
-            
-            // Update transaction status to paid
-            if (pending.txId) {
-              updateTransactionStatus(pending.txId, 'paid')
-            }
 
             const updated = pendingTokens.filter(t => t.id !== pending.id)
             setPendingTokens(updated)
@@ -1337,15 +1293,14 @@ function App() {
     return () => clearInterval(interval)
   }, [pendingTokens, wallet])
 
-  const savePendingToken = (token, amount, mintUrl, proofs, txId) => {
+  const savePendingToken = (token, amount, mintUrl, proofs) => {
     const pending = {
       id: Date.now(),
       token,
       amount,
       mintUrl,
       proofs,
-      timestamp: new Date().toISOString(),
-      txId  // Link to transaction
+      timestamp: new Date().toISOString()
     }
     const updated = [pending, ...pendingTokens]
     setPendingTokens(updated)
@@ -1371,7 +1326,7 @@ function App() {
       const tokenMintUrl = decoded.token[0]?.mint
 
       const targetMint = new CashuMint(tokenMintUrl)
-      const targetWallet = new CashuWallet(targetMint, { bip39seed: bip39Seed })
+      const targetWallet = new CashuWallet(targetMint)
 
       const proofs = await targetWallet.receive(pendingToken.token)
 
@@ -1449,7 +1404,7 @@ function App() {
 
     try {
       const mint = new CashuMint(pending.mintUrl)
-      const tempWallet = new CashuWallet(mint, { bip39seed: bip39Seed })
+      const tempWallet = new CashuWallet(mint)
 
       const { proofs } = await tempWallet.mintTokens(pending.amount, pending.quote)
 
@@ -1566,7 +1521,7 @@ function App() {
       setError('')
 
       const mint = new CashuMint(mintUrl)
-      const newWallet = new CashuWallet(mint, { bip39seed: bip39Seed })
+      const newWallet = new CashuWallet(mint)
 
       try {
         const info = await mint.getInfo()
@@ -1682,32 +1637,22 @@ function App() {
     }
   }
 
-  const addTransaction = (type, amount, note, mint, status = 'paid') => {
+  const addTransaction = (type, amount, note, mint) => {
     const tx = {
       id: Date.now(),
       type,
       amount,
       note,
       mint: mint || mintUrl,
-      timestamp: new Date().toISOString(),
-      status  // 'paid' or 'pending'
+      timestamp: new Date().toISOString()
     }
     const updated = [tx, ...transactions]
-    setTransactions(updated)
-    localStorage.setItem('cashu_transactions', JSON.stringify(updated))
-    return tx.id  // Return ID so we can update it later
-  }
-
-  const updateTransactionStatus = (txId, newStatus) => {
-    const updated = transactions.map(tx => 
-      tx.id === txId ? { ...tx, status: newStatus } : tx
-    )
     setTransactions(updated)
     localStorage.setItem('cashu_transactions', JSON.stringify(updated))
   }
 
   const generateQR = async (data) => {
-    const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=500x500&data=${encodeURIComponent(data)}`
+    const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(data)}`
     return qrUrl
   }
 
@@ -1850,9 +1795,9 @@ function App() {
       setGeneratedToken(token)
       setGeneratedQR(qr)
 
-      const txId = addTransaction('send', amount, 'Ecash token generated', mintUrl, 'pending')
+      savePendingToken(token, amount, mintUrl, proofsToSend)
 
-      savePendingToken(token, amount, mintUrl, proofsToSend, txId)
+      addTransaction('send', amount, 'Ecash token generated (pending)', mintUrl)
 
       setSuccess('Token generated! Copy to send.')
       setSendAmount('')
@@ -1893,9 +1838,9 @@ function App() {
       }
 
       const targetMint = new CashuMint(detectedMintUrl)
-      const targetWallet = new CashuWallet(targetMint, { bip39seed: bip39Seed })
+      const targetWallet = new CashuWallet(targetMint)
 
-      const proofs = await targetWallet.receive(decoded)
+      const proofs = await targetWallet.receive(cleanToken)
 
       if (!proofs || proofs.length === 0) {
         throw new Error('Token already claimed or invalid.')
@@ -2215,19 +2160,6 @@ function App() {
                         {tx.type === 'send' ? '-' : '+'}{tx.amount} sats
                       </div>
                       <div style={{ fontSize: '0.8em', opacity: 0.6 }}>{tx.note}</div>
-                      {tx.status === 'pending' && (
-                        <span style={{
-                          fontSize: '0.75em',
-                          background: 'rgba(255, 165, 0, 0.2)',
-                          color: '#FFA500',
-                          padding: '0.2em 0.5em',
-                          borderRadius: '4px',
-                          marginTop: '0.3em',
-                          display: 'inline-block'
-                        }}>
-                          ⏳ Pending
-                        </span>
-                      )}
                     </div>
                   </div>
                 </div>
@@ -2242,7 +2174,6 @@ function App() {
       </div>
     )
   }
-
 
   if (showSendPage) {
     return (
@@ -2327,7 +2258,7 @@ function App() {
               <div style={{ marginTop: '1em' }}>
                 {generatedQR && (
                   <div style={{ textAlign: 'center', marginBottom: '1em' }}>
-                    <img src={generatedQR} alt="QR Code" style={{ maxWidth: '280px', width: '100%', borderRadius: '8px' }} />
+                    <img src={generatedQR} alt="QR Code" style={{ maxWidth: '250px', borderRadius: '8px' }} />
                   </div>
                 )}
                 <div className="token-box">
@@ -2489,7 +2420,7 @@ function App() {
             </p>
             {lightningInvoiceQR && (
               <div style={{ textAlign: 'center', marginBottom: '1em' }}>
-                <img src={lightningInvoiceQR} alt="Invoice QR" style={{ maxWidth: '280px', width: '100%', borderRadius: '8px' }} />
+                <img src={lightningInvoiceQR} alt="Invoice QR" style={{ maxWidth: '250px', borderRadius: '8px' }} />
               </div>
             )}
             <div className="token-box">

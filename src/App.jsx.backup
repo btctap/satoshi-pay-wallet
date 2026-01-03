@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { CashuMint, CashuWallet, getEncodedToken, getDecodedToken } from '@cashu/cashu-ts'
+import { generateMnemonic, validateMnemonic, mnemonicToSeedSync } from 'bip39'
+import CryptoJS from 'crypto-js'
 import './App.css'
 
 const DEFAULT_MINTS = [
@@ -8,6 +10,36 @@ const DEFAULT_MINTS = [
 ]
 
 const WALLET_NAME = 'Satoshi Pay'
+
+// Vibration helper
+const vibrate = (pattern = [100]) => {
+  if ('vibrate' in navigator) {
+    navigator.vibrate(pattern)
+  }
+}
+
+// ✅ NEW: Seed phrase utilities
+const generateWalletSeed = () => {
+  return generateMnemonic() // 12-word BIP39 mnemonic
+}
+
+const deriveMasterKey = (seed) => {
+  const seedBuffer = mnemonicToSeedSync(seed)
+  return CryptoJS.SHA256(seedBuffer.toString('hex')).toString()
+}
+
+const encryptProofs = (proofs, masterKey) => {
+  return CryptoJS.AES.encrypt(JSON.stringify(proofs), masterKey).toString()
+}
+
+const decryptProofs = (encryptedData, masterKey) => {
+  try {
+    const bytes = CryptoJS.AES.decrypt(encryptedData, masterKey)
+    return JSON.parse(bytes.toString(CryptoJS.enc.Utf8))
+  } catch (err) {
+    throw new Error('Invalid seed phrase or corrupted data')
+  }
+}
 
 // Splash Screen Component
 function SplashScreen({ onComplete }) {
@@ -42,16 +74,16 @@ function SplashScreen({ onComplete }) {
       justifyContent: 'center',
       zIndex: 10000
     }}>
-      <img 
-        src="/cashu-bluetooth-wallet/icon-192.png" 
-        alt="Logo" 
-        style={{ 
-          width: '120px', 
-          height: '120px', 
+      <img
+        src="/satoshi-pay-wallet/icon-192.png"
+        alt="Logo"
+        style={{
+          width: '120px',
+          height: '120px',
           marginBottom: '1em',
           borderRadius: '30px',
           animation: 'pulse 2s ease-in-out infinite'
-        }} 
+        }}
       />
       <h1 style={{
         fontSize: '2em',
@@ -68,9 +100,9 @@ function SplashScreen({ onComplete }) {
         opacity: 0.7,
         marginBottom: '2em'
       }}>
-        Offline Bitcoin Payments
+        Bitcoin Ecash Wallet
       </p>
-      
+
       <div style={{
         width: '200px',
         height: '4px',
@@ -92,6 +124,324 @@ function SplashScreen({ onComplete }) {
           50% { transform: scale(1.05); opacity: 0.9; }
         }
       `}</style>
+    </div>
+  )
+}
+
+// ✅ COMPLETE FIX: Seed Phrase Backup Screen
+function SeedPhraseBackup({ seedPhrase, onConfirm, onCancel, isNewWallet }) {
+  const [confirmed, setConfirmed] = useState(false)
+  const [userWords, setUserWords] = useState(Array(12).fill(''))
+  const [verifyMode, setVerifyMode] = useState(false)
+  const [verifyError, setVerifyError] = useState('')
+
+  // ✅ Safety check: if no seed phrase, show loading
+  if (!seedPhrase || seedPhrase.trim() === '') {
+    return (
+      <div className="app">
+        <div className="card">
+          <p style={{ textAlign: 'center' }}>Generating seed phrase...</p>
+        </div>
+      </div>
+    )
+  }
+
+  const words = seedPhrase.split(' ')
+
+  // ✅ Safety check: make sure we have exactly 12 words
+  if (words.length !== 12) {
+    return (
+      <div className="app">
+        <div className="card" style={{ borderColor: '#ff6b6b' }}>
+          <h3 style={{ color: '#ff6b6b' }}>⚠️ Error</h3>
+          <p>Invalid seed phrase (expected 12 words, got {words.length})</p>
+          <p style={{ fontSize: '0.8em', wordBreak: 'break-all', marginTop: '1em' }}>
+            {seedPhrase}
+          </p>
+        </div>
+      </div>
+    )
+  }
+
+  const handleVerify = () => {
+    const userPhrase = userWords.join(' ')
+    if (userPhrase === seedPhrase) {
+      vibrate([100, 50, 100])
+      onConfirm()
+    } else {
+      setVerifyError('❌ Words do not match! Please try again.')
+      vibrate([200, 100, 200])
+      setTimeout(() => setVerifyError(''), 3000)
+    }
+  }
+
+  return (
+    <div className="app">
+      <header>
+        {!isNewWallet && <button className="back-btn" onClick={onCancel}>← Back</button>}
+        <h1>🔐 {verifyMode ? 'Verify' : 'Backup'} Wallet</h1>
+      </header>
+
+      {!verifyMode ? (
+        <>
+          <div className="card" style={{ borderColor: '#ff6b6b' }}>
+            <h3 style={{ color: '#ff6b6b' }}>⚠️ CRITICAL: Write This Down!</h3>
+            <p style={{ fontSize: '0.9em', lineHeight: '1.6', marginBottom: '1em' }}>
+              This is your <strong>recovery phrase</strong>. Write it down on paper and keep it safe.
+              <br/><br/>
+              ❌ <strong>Never share it with anyone</strong><br/>
+              ❌ <strong>Don't screenshot or save digitally</strong><br/>
+              ✅ <strong>Store it offline and securely</strong>
+            </p>
+          </div>
+
+          <div className="card">
+            {/* ✅ SHOW THE 12 WORDS */}
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(2, 1fr)',
+              gap: '0.8em',
+              marginBottom: '1em'
+            }}>
+              {words.map((word, idx) => (
+                <div key={idx} style={{
+                  background: 'rgba(255, 215, 0, 0.1)',
+                  padding: '1em 0.8em',
+                  borderRadius: '8px',
+                  border: '1px solid rgba(255, 215, 0, 0.3)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.5em'
+                }}>
+                  <span style={{ 
+                    opacity: 0.5, 
+                    fontSize: '0.75em',
+                    minWidth: '20px'
+                  }}>
+                    {idx + 1}.
+                  </span>
+                  <strong style={{ 
+                    fontSize: '1em',
+                    color: '#FFD700',
+                    flex: 1,
+                    wordBreak: 'break-word'
+                  }}>
+                    {word}
+                  </strong>
+                </div>
+              ))}
+            </div>
+
+            {/* ✅ ALSO ADD A COPY BUTTON */}
+            <button
+              className="copy-btn"
+              onClick={() => {
+                navigator.clipboard.writeText(seedPhrase)
+                alert('⚠️ Seed phrase copied! Remember to delete from clipboard after writing it down.')
+              }}
+              style={{ 
+                marginTop: '0.5em',
+                background: 'rgba(255, 215, 0, 0.1)',
+                color: '#FFD700',
+                fontSize: '0.9em'
+              }}
+            >
+              📋 Copy to Clipboard (Use carefully!)
+            </button>
+          </div>
+
+          <div className="card">
+            <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', gap: '0.5em' }}>
+              <input
+                type="checkbox"
+                checked={confirmed}
+                onChange={(e) => setConfirmed(e.target.checked)}
+                style={{ width: '20px', height: '20px', cursor: 'pointer' }}
+              />
+              <span style={{ fontSize: '0.95em' }}>
+                I have written down my recovery phrase on paper
+              </span>
+            </label>
+          </div>
+
+          <button
+            className="primary-btn"
+            onClick={() => setVerifyMode(true)}
+            disabled={!confirmed}
+          >
+            Continue to Verification
+          </button>
+
+          {!isNewWallet && (
+            <button className="secondary-btn" onClick={onCancel} style={{ marginTop: '0.5em' }}>
+              Cancel
+            </button>
+          )}
+        </>
+      ) : (
+        <>
+          <div className="card">
+            <h3>Verify Your Words</h3>
+            <p style={{ fontSize: '0.9em', marginBottom: '1em', opacity: 0.8 }}>
+              Enter your 12 recovery words to confirm you wrote them down correctly:
+            </p>
+            {verifyError && (
+              <div style={{
+                background: 'rgba(255, 107, 107, 0.1)',
+                color: '#ff6b6b',
+                padding: '0.8em',
+                borderRadius: '8px',
+                marginBottom: '1em',
+                fontSize: '0.9em'
+              }}>
+                {verifyError}
+              </div>
+            )}
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(2, 1fr)',
+              gap: '0.5em',
+              marginBottom: '1em'
+            }}>
+              {userWords.map((word, idx) => (
+                <input
+                  key={idx}
+                  type="text"
+                  placeholder={`${idx + 1}. word`}
+                  value={word}
+                  onChange={(e) => {
+                    const newWords = [...userWords]
+                    newWords[idx] = e.target.value.toLowerCase().trim()
+                    setUserWords(newWords)
+                  }}
+                  style={{
+                    padding: '0.6em',
+                    fontSize: '0.9em',
+                    background: 'rgba(255, 255, 255, 0.05)',
+                    border: '1px solid rgba(255, 255, 255, 0.1)',
+                    borderRadius: '6px',
+                    color: 'white'
+                  }}
+                />
+              ))}
+            </div>
+          </div>
+
+          <button
+            className="primary-btn"
+            onClick={handleVerify}
+            disabled={userWords.some(w => !w)}
+          >
+            Verify & Continue
+          </button>
+
+          <button
+            className="secondary-btn"
+            onClick={() => {
+              setVerifyMode(false)
+              setUserWords(Array(12).fill(''))
+              setVerifyError('')
+            }}
+            style={{ marginTop: '0.5em' }}
+          >
+            ← Back to Recovery Phrase
+          </button>
+        </>
+      )}
+    </div>
+  )
+}
+
+// ✅ NEW: Restore Wallet Screen
+function RestoreWallet({ onRestore, onCancel }) {
+  const [seedInput, setSeedInput] = useState('')
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  const handleRestore = async () => {
+    try {
+      setLoading(true)
+      setError('')
+
+      const cleanSeed = seedInput.trim().toLowerCase().replace(/\s+/g, ' ')
+      
+      if (!validateMnemonic(cleanSeed)) {
+        throw new Error('Invalid recovery phrase. Please check your words.')
+      }
+
+      await onRestore(cleanSeed)
+      vibrate([100, 50, 100])
+
+    } catch (err) {
+      setError(err.message)
+      vibrate([200])
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="app">
+      <header>
+        <button className="back-btn" onClick={onCancel}>← Cancel</button>
+        <h1>🔄 Restore Wallet</h1>
+      </header>
+
+      <div className="card">
+        <h3>Enter Recovery Phrase</h3>
+        <p style={{ fontSize: '0.9em', marginBottom: '1em', opacity: 0.8 }}>
+          Enter your 12-word recovery phrase to restore your wallet:
+        </p>
+
+        {error && (
+          <div style={{
+            background: 'rgba(255, 107, 107, 0.1)',
+            color: '#ff6b6b',
+            padding: '0.8em',
+            borderRadius: '8px',
+            marginBottom: '1em',
+            fontSize: '0.9em'
+          }}>
+            {error}
+          </div>
+        )}
+
+        <textarea
+          placeholder="Enter your 12 recovery words separated by spaces"
+          value={seedInput}
+          onChange={(e) => setSeedInput(e.target.value)}
+          rows={4}
+          style={{
+            width: '100%',
+            padding: '0.8em',
+            fontSize: '0.9em',
+            background: 'rgba(255, 255, 255, 0.05)',
+            border: '1px solid rgba(255, 255, 255, 0.1)',
+            borderRadius: '8px',
+            color: 'white',
+            resize: 'vertical',
+            marginBottom: '1em'
+          }}
+        />
+
+        <button
+          className="primary-btn"
+          onClick={handleRestore}
+          disabled={loading || !seedInput.trim()}
+        >
+          {loading ? 'Restoring...' : 'Restore Wallet'}
+        </button>
+      </div>
+
+      <div className="card" style={{ borderColor: 'rgba(255, 215, 0, 0.3)' }}>
+        <h4 style={{ color: '#FFD700', fontSize: '0.95em' }}>💡 Tips:</h4>
+        <ul style={{ fontSize: '0.85em', lineHeight: '1.6', paddingLeft: '1.2em', opacity: 0.8 }}>
+          <li>Must be exactly 12 words</li>
+          <li>Separated by spaces</li>
+          <li>All lowercase</li>
+          <li>Check for typos carefully</li>
+        </ul>
+      </div>
     </div>
   )
 }
@@ -122,11 +472,11 @@ function InstallButton() {
 
     deferredPrompt.prompt()
     const { outcome } = await deferredPrompt.userChoice
-    
+
     if (outcome === 'accepted') {
       setShowInstall(false)
     }
-    
+
     setDeferredPrompt(null)
   }
 
@@ -173,279 +523,80 @@ function InstallButton() {
   )
 }
 
-// Bluetooth service UUIDs
-const CASHU_SERVICE_UUID = '12345678-1234-5678-1234-56789abcdef0'
-const TOKEN_CHARACTERISTIC_UUID = '12345678-1234-5678-1234-56789abcdef1'
-
-// Bluetooth Transfer Component
-function BluetoothTransfer({ 
-  generatedToken, 
-  onReceiveToken, 
-  onClose 
+// Pending Tokens Component
+function PendingTokensView({
+  pendingTokens,
+  onReclaim,
+  onCopy,
+  onRemove,
+  onClose
 }) {
-  const [mode, setMode] = useState(null)
-  const [status, setStatus] = useState('')
-  const [error, setError] = useState('')
-  const [connecting, setConnecting] = useState(false)
-
-  const isBluetoothSupported = () => {
-    return navigator.bluetooth !== undefined
-  }
-
-  const handleSendViaBluetooth = async () => {
-    if (!generatedToken) {
-      setError('No token to send. Generate a token first.')
-      return
-    }
-
-    try {
-      setConnecting(true)
-      setError('')
-      setStatus('Looking for devices...')
-
-      const device = await navigator.bluetooth.requestDevice({
-        acceptAllDevices: true,
-        optionalServices: [CASHU_SERVICE_UUID]
-      })
-
-      setStatus('Connecting...')
-      const server = await device.gatt.connect()
-      
-      setStatus('Getting service...')
-      const service = await server.getPrimaryService(CASHU_SERVICE_UUID)
-      
-      setStatus('Getting characteristic...')
-      const characteristic = await service.getCharacteristic(TOKEN_CHARACTERISTIC_UUID)
-
-      setStatus('Sending token...')
-      
-      const encoder = new TextEncoder()
-      const tokenBytes = encoder.encode(generatedToken)
-      
-      const chunkSize = 512
-      for (let i = 0; i < tokenBytes.length; i += chunkSize) {
-        const chunk = tokenBytes.slice(i, i + chunkSize)
-        await characteristic.writeValue(chunk)
-      }
-
-      setStatus('✅ Token sent successfully!')
-      setTimeout(() => {
-        onClose()
-      }, 2000)
-
-    } catch (err) {
-      console.error('Bluetooth send error:', err)
-      setError(`Failed to send: ${err.message}`)
-    } finally {
-      setConnecting(false)
-    }
-  }
-
-  const handleReceiveViaBluetooth = async () => {
-    try {
-      setConnecting(true)
-      setError('')
-      setStatus('Starting Bluetooth...')
-
-      const device = await navigator.bluetooth.requestDevice({
-        acceptAllDevices: true,
-        optionalServices: [CASHU_SERVICE_UUID]
-      })
-
-      setStatus('Connected! Waiting for token...')
-
-      const server = await device.gatt.connect()
-      const service = await server.getPrimaryService(CASHU_SERVICE_UUID)
-      const characteristic = await service.getCharacteristic(TOKEN_CHARACTERISTIC_UUID)
-
-      characteristic.addEventListener('characteristicvaluechanged', (event) => {
-        const decoder = new TextDecoder()
-        const receivedToken = decoder.decode(event.target.value)
-        
-        setStatus('✅ Token received!')
-        onReceiveToken(receivedToken)
-        
-        setTimeout(() => {
-          onClose()
-        }, 2000)
-      })
-
-      await characteristic.startNotifications()
-
-    } catch (err) {
-      console.error('Bluetooth receive error:', err)
-      setError(`Failed to receive: ${err.message}`)
-    } finally {
-      setConnecting(false)
-    }
-  }
-
-  if (!isBluetoothSupported()) {
-    return (
-      <div className="card" style={{ background: 'rgba(255, 107, 107, 0.1)', borderColor: '#ff6b6b' }}>
-        <h3>❌ Bluetooth Not Supported</h3>
-        <p>Your browser doesn't support Web Bluetooth API.</p>
-        <p style={{ fontSize: '0.9em', marginTop: '1em' }}>
-          Try using Chrome, Edge, or Opera on Android/Desktop.
-        </p>
-        <button className="secondary-btn" onClick={onClose} style={{ marginTop: '1em' }}>
-          Close
-        </button>
-      </div>
-    )
-  }
-
   return (
-    <div className="card">
-      <h3>📡 Bluetooth Transfer</h3>
-      
-      {error && (
-        <div style={{ 
-          background: 'rgba(255, 107, 107, 0.1)', 
-          padding: '1em', 
-          borderRadius: '8px',
-          marginBottom: '1em',
-          color: '#ff6b6b'
-        }}>
-          {error}
-        </div>
-      )}
+    <div className="app">
+      <header>
+        <button className="back-btn" onClick={onClose}>← Back</button>
+        <h1>📋 Pending Tokens</h1>
+      </header>
 
-      {status && (
-        <div style={{ 
-          background: 'rgba(81, 207, 102, 0.1)', 
-          padding: '1em', 
-          borderRadius: '8px',
-          marginBottom: '1em',
-          color: '#51cf66'
-        }}>
-          {status}
-        </div>
-      )}
-
-      {!mode ? (
-        <>
-          <p style={{ marginBottom: '1em', opacity: 0.8 }}>
-            Transfer Cashu tokens offline via Bluetooth
+      {pendingTokens.length === 0 ? (
+        <div className="card">
+          <p style={{ textAlign: 'center', opacity: 0.6 }}>
+            No pending tokens
           </p>
-
-          <button
-            className="primary-btn"
-            onClick={() => setMode('send')}
-            disabled={!generatedToken}
-            style={{ marginBottom: '0.5em' }}
-          >
-            📤 Send Token via Bluetooth
-          </button>
-
-          <button
-            className="secondary-btn"
-            onClick={() => setMode('receive')}
-          >
-            📥 Receive Token via Bluetooth
-          </button>
-
-          {!generatedToken && (
-            <p style={{ fontSize: '0.85em', marginTop: '1em', opacity: 0.6 }}>
-              💡 Generate a token first to send via Bluetooth
-            </p>
-          )}
-        </>
-      ) : mode === 'send' ? (
-        <>
-          <div style={{ 
-            background: 'rgba(255, 255, 255, 0.05)', 
-            padding: '1em', 
-            borderRadius: '8px',
-            marginBottom: '1em'
-          }}>
-            <p style={{ fontSize: '0.9em', marginBottom: '0.5em' }}>
-              <strong>How it works:</strong>
-            </p>
-            <ol style={{ fontSize: '0.85em', paddingLeft: '1.5em', margin: 0 }}>
-              <li>Receiver opens "Receive via Bluetooth"</li>
-              <li>You click "Connect & Send"</li>
-              <li>Select receiver's device</li>
-              <li>Token transfers offline!</li>
-            </ol>
-          </div>
-
-          <button
-            className="primary-btn"
-            onClick={handleSendViaBluetooth}
-            disabled={connecting}
-          >
-            {connecting ? 'Connecting...' : '📡 Connect & Send'}
-          </button>
-
-          <button
-            className="secondary-btn"
-            onClick={() => setMode(null)}
-            disabled={connecting}
-            style={{ marginTop: '0.5em' }}
-          >
-            ← Back
-          </button>
-        </>
+          <p style={{ fontSize: '0.85em', opacity: 0.5, marginTop: '0.5em', textAlign: 'center' }}>
+            Unsent tokens will appear here until claimed by recipient
+          </p>
+        </div>
       ) : (
-        <>
-          <div style={{ 
-            background: 'rgba(255, 255, 255, 0.05)', 
-            padding: '1em', 
-            borderRadius: '8px',
-            marginBottom: '1em'
-          }}>
-            <p style={{ fontSize: '0.9em', marginBottom: '0.5em' }}>
-              <strong>How it works:</strong>
+        pendingTokens.map(pending => (
+          <div key={pending.id} className="card" style={{ borderColor: '#FF8C00' }}>
+            <div style={{ marginBottom: '1em' }}>
+              <div style={{ fontSize: '1.2em', fontWeight: 'bold', color: '#FF8C00' }}>
+                {pending.amount} sats
+              </div>
+              <div style={{ fontSize: '0.8em', opacity: 0.6 }}>
+                Created {new Date(pending.timestamp).toLocaleString()}
+              </div>
+            </div>
+
+            <div className="token-box">
+              <textarea
+                readOnly
+                value={pending.token}
+                rows={3}
+                style={{ fontSize: '0.7em', marginBottom: '0.5em' }}
+              />
+            </div>
+
+            <button
+              className="copy-btn"
+              onClick={() => onCopy(pending.token)}
+              style={{ marginBottom: '0.5em' }}
+            >
+              📋 Copy Token
+            </button>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5em' }}>
+              <button
+                className="secondary-btn"
+                onClick={() => onReclaim(pending)}
+              >
+                ↩️ Reclaim
+              </button>
+              <button
+                className="cancel-btn"
+                onClick={() => onRemove(pending.id)}
+              >
+                🗑️ Delete
+              </button>
+            </div>
+
+            <p style={{ fontSize: '0.75em', opacity: 0.5, marginTop: '0.5em' }}>
+              💡 This token will auto-delete once claimed by recipient
             </p>
-            <ol style={{ fontSize: '0.85em', paddingLeft: '1.5em', margin: 0 }}>
-              <li>Click "Start Listening"</li>
-              <li>Wait for sender to connect</li>
-              <li>Accept connection</li>
-              <li>Receive token offline!</li>
-            </ol>
           </div>
-
-          <button
-            className="primary-btn"
-            onClick={handleReceiveViaBluetooth}
-            disabled={connecting}
-          >
-            {connecting ? 'Listening...' : '📡 Start Listening'}
-          </button>
-
-          <button
-            className="secondary-btn"
-            onClick={() => setMode(null)}
-            disabled={connecting}
-            style={{ marginTop: '0.5em' }}
-          >
-            ← Back
-          </button>
-        </>
+        ))
       )}
-
-      <button
-        className="back-btn"
-        onClick={onClose}
-        disabled={connecting}
-        style={{ marginTop: '1em', position: 'relative', left: 0, transform: 'none' }}
-      >
-        Close
-      </button>
-
-      <div style={{ 
-        marginTop: '1.5em', 
-        padding: '1em', 
-        background: 'rgba(255, 255, 255, 0.03)',
-        borderRadius: '8px',
-        fontSize: '0.85em',
-        opacity: 0.7
-      }}>
-        <p><strong>📱 Browser Support:</strong></p>
-        <ul style={{ paddingLeft: '1.5em', margin: '0.5em 0 0 0' }}>
-        </ul>
-      </div>
     </div>
   )
 }
@@ -803,7 +954,6 @@ function SendViaLightning({
       }
 
       const sendResult = await wallet.send(totalAmount, proofs)
-
       let proofsToKeep = []
       let proofsToSend = []
 
@@ -842,6 +992,8 @@ function SendViaLightning({
       calculateAllBalances()
 
       addTransaction('send', decodedInvoice.amount, 'Paid Lightning invoice', mintUrl)
+
+      vibrate([100, 50, 100])
 
       setSuccess(`✅ Sent ${decodedInvoice.amount} sats via Lightning!`)
 
@@ -959,6 +1111,7 @@ function SendViaLightning({
 }
 
 function App() {
+  const [showSplash, setShowSplash] = useState(true)
   const [wallet, setWallet] = useState(null)
   const [mintUrl, setMintUrl] = useState(DEFAULT_MINTS[0].url)
   const [customMints, setCustomMints] = useState([])
@@ -991,12 +1144,219 @@ function App() {
   const [transactions, setTransactions] = useState([])
   const [decodedInvoice, setDecodedInvoice] = useState(null)
 
-  // Scanner states
   const [showScanner, setShowScanner] = useState(false)
   const [scanMode, setScanMode] = useState(null)
 
-  // 🔥 NEW: Bluetooth state
-  const [showBluetoothTransfer, setShowBluetoothTransfer] = useState(false)
+  const [pendingTokens, setPendingTokens] = useState([])
+  const [showPendingTokens, setShowPendingTokens] = useState(false)
+
+  // ✅ NEW: Seed phrase states
+  const [seedPhrase, setSeedPhrase] = useState('')
+  const [showSeedBackup, setShowSeedBackup] = useState(false)
+  const [showRestoreWallet, setShowRestoreWallet] = useState(false)
+  const [isNewWallet, setIsNewWallet] = useState(false)
+  const [masterKey, setMasterKey] = useState('')
+
+  // ✅ NEW: Initialize or restore wallet on mount
+  useEffect(() => {
+    const initializeWallet = async () => {
+      const existingSeed = localStorage.getItem('wallet_seed')
+      
+      if (existingSeed) {
+        // Existing wallet - derive master key
+        const key = deriveMasterKey(existingSeed)
+        setMasterKey(key)
+        setSeedPhrase(existingSeed)
+        loadCustomMints()
+        initWallet()
+        loadTransactions()
+        calculateAllBalances()
+      } else {
+        // New wallet - generate seed
+        const newSeed = generateWalletSeed()
+        console.log("✅ Generated new seed:", newSeed)
+        setSeedPhrase(newSeed)
+        localStorage.setItem("wallet_seed", newSeed)
+        setIsNewWallet(true)
+        setTimeout(() => setShowSeedBackup(true), 200)
+      }
+    }
+
+    initializeWallet()
+  }, [])
+
+  // ✅ NEW: Handle seed backup confirmation
+  const handleSeedBackupConfirm = () => {
+    localStorage.setItem('wallet_seed', seedPhrase)
+    localStorage.setItem('wallet_backed_up', 'true')
+    const key = deriveMasterKey(seedPhrase)
+    setMasterKey(key)
+    setShowSeedBackup(false)
+    setIsNewWallet(false)
+    
+    // Now initialize wallet properly
+    loadCustomMints()
+    initWallet()
+    loadTransactions()
+    calculateAllBalances()
+  }
+
+  // ✅ NEW: Handle wallet restore
+  const handleRestoreWallet = async (restoredSeed) => {
+    // Clear existing wallet data
+    allMints.forEach(mint => {
+      const key = `cashu_proofs_${btoa(mint.url)}`
+      localStorage.removeItem(key)
+    })
+    localStorage.removeItem('cashu_transactions')
+    localStorage.removeItem('pending_tokens')
+
+    // Set new seed
+    localStorage.setItem('wallet_seed', restoredSeed)
+    localStorage.setItem('wallet_backed_up', 'true')
+    setSeedPhrase(restoredSeed)
+    
+    const key = deriveMasterKey(restoredSeed)
+    setMasterKey(key)
+    
+    setShowRestoreWallet(false)
+    
+    // Reinitialize wallet
+    loadCustomMints()
+    await initWallet()
+    calculateAllBalances()
+    
+    setSuccess('✅ Wallet restored successfully!')
+    setTimeout(() => setSuccess(''), 3000)
+  }
+
+  useEffect(() => {
+    const loadPendingTokens = () => {
+      try {
+        const saved = localStorage.getItem('pending_tokens')
+        if (saved) {
+          setPendingTokens(JSON.parse(saved))
+        }
+      } catch (err) {
+        console.error('Error loading pending tokens:', err)
+      }
+    }
+    loadPendingTokens()
+  }, [])
+
+  useEffect(() => {
+    if (pendingTokens.length === 0 || !wallet) return
+
+    const checkPendingTokensSpending = async () => {
+      for (const pending of pendingTokens) {
+        try {
+          if (!pending.proofs || pending.proofs.length === 0) continue
+
+          const tokenAge = Date.now() - new Date(pending.timestamp).getTime()
+          if (tokenAge < 10000) {
+            console.log(`Skipping new token ${pending.id} (only ${Math.round(tokenAge/1000)}s old)`)
+            continue
+          }
+
+          const mint = new CashuMint(pending.mintUrl)
+          const tempWallet = new CashuWallet(mint)
+
+          const spentStates = await tempWallet.checkProofsSpent(pending.proofs)
+
+          const allSpent = spentStates.every(state => {
+            return state.spentProof?.spent === true ||
+                   state.spent === true ||
+                   state.state === 'SPENT'
+          })
+
+          if (allSpent) {
+            console.log(`✅ Token ${pending.id} was claimed!`)
+
+            const updated = pendingTokens.filter(t => t.id !== pending.id)
+            setPendingTokens(updated)
+            localStorage.setItem('pending_tokens', JSON.stringify(updated))
+
+            vibrate([100, 50, 100])
+            setSuccess(`✅ ${pending.amount} sats token was claimed!`)
+            setTimeout(() => setSuccess(''), 3000)
+          }
+
+        } catch (err) {
+          console.error(`Error checking token ${pending.id}:`, err)
+        }
+      }
+    }
+
+    const interval = setInterval(checkPendingTokensSpending, 30000)
+
+    return () => clearInterval(interval)
+  }, [pendingTokens, wallet])
+
+  const savePendingToken = (token, amount, mintUrl, proofs) => {
+    const pending = {
+      id: Date.now(),
+      token,
+      amount,
+      mintUrl,
+      proofs,
+      timestamp: new Date().toISOString()
+    }
+    const updated = [pending, ...pendingTokens]
+    setPendingTokens(updated)
+    localStorage.setItem('pending_tokens', JSON.stringify(updated))
+  }
+
+  const removePendingToken = (tokenId) => {
+    if (confirm('Delete this token? This cannot be undone.')) {
+      const updated = pendingTokens.filter(t => t.id !== tokenId)
+      setPendingTokens(updated)
+      localStorage.setItem('pending_tokens', JSON.stringify(updated))
+      setSuccess('Token deleted')
+      setTimeout(() => setSuccess(''), 2000)
+    }
+  }
+
+  const reclaimPendingToken = async (pendingToken) => {
+    try {
+      setLoading(true)
+      setError('')
+
+      const decoded = getDecodedToken(pendingToken.token)
+      const tokenMintUrl = decoded.token[0]?.mint
+
+      const targetMint = new CashuMint(tokenMintUrl)
+      const targetWallet = new CashuWallet(targetMint)
+
+      const proofs = await targetWallet.receive(pendingToken.token)
+
+      if (proofs && proofs.length > 0) {
+        const existingProofs = getProofsForMint(tokenMintUrl)
+        const allProofs = [...existingProofs, ...proofs]
+        saveProofsForMint(tokenMintUrl, allProofs)
+        calculateAllBalances()
+
+        const updated = pendingTokens.filter(t => t.id !== pendingToken.id)
+        setPendingTokens(updated)
+        localStorage.setItem('pending_tokens', JSON.stringify(updated))
+
+        vibrate([200])
+
+        setSuccess(`✅ Reclaimed ${pendingToken.amount} sats!`)
+        setTimeout(() => setSuccess(''), 2000)
+      }
+    } catch (err) {
+      if (err.message?.includes('already spent') || err.message?.includes('already claimed')) {
+        setError('Token already claimed by recipient')
+        const updated = pendingTokens.filter(t => t.id !== pendingToken.id)
+        setPendingTokens(updated)
+        localStorage.setItem('pending_tokens', JSON.stringify(updated))
+      } else {
+        setError(`Could not reclaim: ${err.message}`)
+      }
+    } finally {
+      setLoading(false)
+    }
+  }
 
   const savePendingQuote = (quote, amount, mintUrl) => {
     const pending = {
@@ -1054,8 +1414,10 @@ function App() {
         localStorage.setItem(key, JSON.stringify(allProofs))
 
         calculateAllBalances()
-        addTransaction('receive', pending.amount, 'Minted via Lightning (auto-recovered)', pending.mintUrl)
+        addTransaction('receive', pending.amount, 'Minted via Lightning', pending.mintUrl)
         clearPendingQuote()
+
+        vibrate([200])
 
         setSuccess(`🎉 Received ${pending.amount} sats!`)
         setLightningInvoice('')
@@ -1079,13 +1441,6 @@ function App() {
       return false
     }
   }
-
-  useEffect(() => {
-    loadCustomMints()
-    initWallet()
-    loadTransactions()
-    calculateAllBalances()
-  }, [])
 
   useEffect(() => {
     if (mintUrl) {
@@ -1167,15 +1522,21 @@ function App() {
       const mint = new CashuMint(mintUrl)
       const newWallet = new CashuWallet(mint)
 
-      const info = await mint.getInfo()
-      setMintInfo(info)
+      try {
+        const info = await mint.getInfo()
+        setMintInfo(info)
+      } catch (infoError) {
+        console.log('Could not fetch mint info (offline?):', infoError)
+        setMintInfo({ name: 'Mint', nuts: {} })
+      }
 
       setWallet(newWallet)
       await validateProofs(newWallet, mintUrl)
       calculateAllBalances()
 
     } catch (err) {
-      setError(`Failed to connect: ${err.message}`)
+      console.error('Wallet init error:', err)
+      setMintInfo({ name: 'Mint', nuts: {} })
     } finally {
       setLoading(false)
     }
@@ -1214,25 +1575,50 @@ function App() {
     setTotalBalance(total)
   }
 
+  // ✅ MODIFIED: Save proofs with encryption
   const saveProofsForMint = (mintUrl, proofs) => {
     try {
       const validProofs = proofs.filter(p => p && p.amount && typeof p.amount === 'number')
       const key = `cashu_proofs_${btoa(mintUrl)}`
-      localStorage.setItem(key, JSON.stringify(validProofs))
+      
+      if (masterKey) {
+        // Encrypt proofs with master key
+        const encrypted = encryptProofs(validProofs, masterKey)
+        localStorage.setItem(key, encrypted)
+      } else {
+        // Fallback: unencrypted (for backward compatibility)
+        localStorage.setItem(key, JSON.stringify(validProofs))
+      }
     } catch (err) {
       console.error('Error saving proofs:', err)
     }
   }
 
+  // ✅ MODIFIED: Load proofs with decryption
   const getProofsForMint = (mintUrl) => {
     try {
       const key = `cashu_proofs_${btoa(mintUrl)}`
       const saved = localStorage.getItem(key)
+      
       if (!saved || saved === 'undefined' || saved === 'null') {
         return []
       }
-      const parsed = JSON.parse(saved)
-      return Array.isArray(parsed) ? parsed.filter(p => p && p.amount) : []
+
+      // Try to decrypt if we have a master key
+      if (masterKey) {
+        try {
+          return decryptProofs(saved, masterKey)
+        } catch (decryptErr) {
+          // Fallback: might be unencrypted old data
+          console.log('Decryption failed, trying plain JSON...')
+          const parsed = JSON.parse(saved)
+          return Array.isArray(parsed) ? parsed.filter(p => p && p.amount) : []
+        }
+      } else {
+        // No master key yet - return plain data
+        const parsed = JSON.parse(saved)
+        return Array.isArray(parsed) ? parsed.filter(p => p && p.amount) : []
+      }
     } catch (err) {
       console.error('Error loading proofs:', err)
       return []
@@ -1396,8 +1782,7 @@ function App() {
         throw new Error('Failed to create send proofs')
       }
 
-      const key = `cashu_proofs_${btoa(mintUrl)}`
-      localStorage.setItem(key, JSON.stringify(proofsToKeep))
+      saveProofsForMint(mintUrl, proofsToKeep)
 
       calculateAllBalances()
 
@@ -1409,9 +1794,11 @@ function App() {
       setGeneratedToken(token)
       setGeneratedQR(qr)
 
-      addTransaction('send', amount, 'Ecash token sent', mintUrl)
+      savePendingToken(token, amount, mintUrl, proofsToSend)
 
-      setSuccess('Token generated!')
+      addTransaction('send', amount, 'Ecash token generated (pending)', mintUrl)
+
+      setSuccess('Token generated! Copy to send.')
       setSendAmount('')
 
     } catch (err) {
@@ -1462,13 +1849,14 @@ function App() {
       const allProofs = [...existingProofs, ...proofs]
 
       const validProofs = allProofs.filter(p => p && p.amount && typeof p.amount === 'number')
-      const key = `cashu_proofs_${btoa(detectedMintUrl)}`
-      localStorage.setItem(key, JSON.stringify(validProofs))
+      saveProofsForMint(detectedMintUrl, validProofs)
 
       calculateAllBalances()
 
       const receivedAmount = proofs.reduce((sum, p) => sum + (p.amount || 0), 0)
       addTransaction('receive', receivedAmount, 'Ecash token received', detectedMintUrl)
+
+      vibrate([200])
 
       setSuccess(`✅ Received ${receivedAmount} sats!`)
       setReceiveToken('')
@@ -1548,6 +1936,32 @@ function App() {
 
   const currentMintBalance = balances[mintUrl] || 0
 
+  if (showSplash) {
+    return <SplashScreen onComplete={() => setShowSplash(false)} />
+  }
+
+  // ✅ NEW: Show seed backup screen for new wallets
+  if (showSeedBackup) {
+    return (
+      <SeedPhraseBackup
+        seedPhrase={seedPhrase}
+        onConfirm={handleSeedBackupConfirm}
+        onCancel={() => !isNewWallet && setShowSeedBackup(false)}
+        isNewWallet={isNewWallet}
+      />
+    )
+  }
+
+  // ✅ NEW: Show restore wallet screen
+  if (showRestoreWallet) {
+    return (
+      <RestoreWallet
+        onRestore={handleRestoreWallet}
+        onCancel={() => setShowRestoreWallet(false)}
+      />
+    )
+  }
+
   if (showScanner) {
     return (
       <QRScanner
@@ -1558,41 +1972,18 @@ function App() {
     )
   }
 
-  // 🔥 NEW: Bluetooth modal overlay
-  if (showBluetoothTransfer) {
+  if (showPendingTokens) {
     return (
-      <div style={{
-        position: 'fixed',
-        top: 0,
-        left: 0,
-        right: 0,
-        bottom: 0,
-        background: 'rgba(0, 0, 0, 0.9)',
-        zIndex: 10000,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        padding: '1em',
-        overflowY: 'auto'
-      }}>
-        <div style={{ maxWidth: '500px', width: '100%' }}>
-          <BluetoothTransfer
-            generatedToken={generatedToken}
-            onReceiveToken={(token) => {
-              setReceiveToken(token)
-              setShowBluetoothTransfer(false)
-              setShowReceivePage(true)
-              setReceiveMethod('ecash')
-              setTimeout(() => handleReceiveEcash(), 100)
-            }}
-            onClose={() => setShowBluetoothTransfer(false)}
-          />
-        </div>
-      </div>
+      <PendingTokensView
+        pendingTokens={pendingTokens}
+        onReclaim={reclaimPendingToken}
+        onCopy={(token) => copyToClipboard(token, 'Token')}
+        onRemove={removePendingToken}
+        onClose={() => setShowPendingTokens(false)}
+      />
     )
   }
 
-// Settings page
   if (showMintSettings) {
     return (
       <div className="app">
@@ -1600,6 +1991,54 @@ function App() {
           <button className="back-btn" onClick={() => setShowMintSettings(false)}>← Back</button>
           <h1>⚙️ Settings</h1>
         </header>
+
+        {/* ✅ NEW: Backup & Restore Section */}
+        <div className="card" style={{ borderColor: '#FFD700' }}>
+          <h3 style={{ color: '#FFD700' }}>🔐 Wallet Backup</h3>
+          <p style={{ fontSize: '0.9em', marginBottom: '1em', opacity: 0.8 }}>
+            Protect your wallet with a 12-word recovery phrase
+          </p>
+
+          <button
+            className="primary-btn"
+            onClick={() => {
+              alert("Button clicked! Seed: " + (localStorage.getItem("wallet_seed") || "none"))
+              const currentSeed = localStorage.getItem("wallet_seed") || seedPhrase
+              if (!currentSeed || currentSeed.trim() === "") {
+                console.error("No seed found! Generating new one...")
+                const newSeed = generateWalletSeed()
+                console.log("🔥 NEW SEED TYPE:", typeof newSeed)
+                console.log("🔥 NEW SEED VALUE:", newSeed)
+                console.log("🔥 NEW SEED LENGTH:", newSeed ? newSeed.length : 0)
+                alert("Generated: " + newSeed)
+                localStorage.setItem("wallet_seed", newSeed)
+              } else {
+                setSeedPhrase(currentSeed)
+              }
+              setTimeout(() => setShowSeedBackup(true), 100)
+            }}
+          >
+            📝 View Recovery Phrase
+          </button>
+
+          <button
+            className="secondary-btn"
+            onClick={() => setShowRestoreWallet(true)}
+          >
+            🔄 Restore from Backup
+          </button>
+
+          <div style={{
+            marginTop: '1em',
+            padding: '0.8em',
+            background: 'rgba(255, 215, 0, 0.1)',
+            borderRadius: '8px',
+            fontSize: '0.85em',
+            lineHeight: '1.5'
+          }}>
+            💡 <strong>Tip:</strong> Write down your recovery phrase on paper and store it safely. Never share it with anyone!
+          </div>
+        </div>
 
         <div className="card">
           <h3>Select Mint</h3>
@@ -1686,7 +2125,6 @@ function App() {
     )
   }
 
-  // History page
   if (showHistoryPage) {
     return (
       <div className="app">
@@ -1736,7 +2174,6 @@ function App() {
     )
   }
 
-  // Send page with Bluetooth support
   if (showSendPage) {
     return (
       <div className="app">
@@ -1801,11 +2238,10 @@ function App() {
             setDecodedInvoice={setDecodedInvoice}
           />
         ) : (
-          // Ecash send
           <div className="card">
             <h3>💰 Send Ecash</h3>
             <p style={{ marginBottom: '1em' }}>
-              Generate an offline token
+              Generate a token to send
             </p>
             <input
               type="number"
@@ -1835,19 +2271,9 @@ function App() {
                 <button className="copy-btn" onClick={() => copyToClipboard(generatedToken, 'Token')}>
                   📋 Copy Token
                 </button>
-
-                {/* 🔥 NEW: Bluetooth Send Button */}
-                <button 
-                  className="primary-btn" 
-                  onClick={() => setShowBluetoothTransfer(true)}
-                  style={{ 
-                    marginTop: '0.5em',
-                    background: '#1e90ff',
-                    width: '100%'
-                  }}
-                >
-                  📡 Send via Bluetooth
-                </button>
+                <p style={{ fontSize: '0.75em', opacity: 0.5, marginTop: '0.5em', textAlign: 'center' }}>
+                  💡 Token will auto-clear once recipient claims it
+                </p>
               </div>
             )}
 
@@ -1862,7 +2288,6 @@ function App() {
     )
   }
 
-  // Receive page with Bluetooth support
   if (showReceivePage) {
     return (
       <div className="app">
@@ -1902,19 +2327,6 @@ function App() {
             <button className="primary-btn" style={{ marginBottom: '0.5em' }} onClick={() => setReceiveMethod('ecash')}>
               💰 Paste Ecash Token
             </button>
-
-            {/* 🔥 NEW: Bluetooth Receive Button */}
-            <button 
-              className="secondary-btn" 
-              onClick={() => {
-                setReceiveMethod('bluetooth')
-                setShowBluetoothTransfer(true)
-              }}
-              style={{ background: '#1e90ff' }}
-            >
-              📡 Receive via Bluetooth
-            </button>
-
             <button className="secondary-btn" onClick={() => setReceiveMethod('lightning')}>
               ⚡ Receive via Lightning
             </button>
@@ -1941,15 +2353,6 @@ function App() {
               ← Change Method
             </button>
           </div>
-        ) : receiveMethod === 'bluetooth' ? (
-          <div className="card">
-            <p style={{ textAlign: 'center', opacity: 0.7 }}>
-              Bluetooth transfer window will open automatically
-            </p>
-            <button className="back-btn" style={{ position: 'relative', left: 0, transform: 'none' }} onClick={resetReceivePage}>
-              ← Change Method
-            </button>
-          </div>
         ) : (
           <div className="card">
             <h3>⚡ Receive Lightning</h3>
@@ -1965,9 +2368,10 @@ function App() {
     )
   }
 
-  // Main page
   return (
     <div className="app">
+      <InstallButton />
+
       <header className="main-header">
         <div className="wallet-name">⚡ {WALLET_NAME}</div>
         <button className="settings-icon" onClick={() => setShowMintSettings(true)}>
@@ -2050,6 +2454,19 @@ function App() {
           </div>
         )}
       </div>
+
+      {pendingTokens.length > 0 && (
+        <button
+          className="history-btn"
+          onClick={() => setShowPendingTokens(true)}
+          style={{
+            background: 'rgba(255, 140, 0, 0.1)',
+            borderColor: '#FF8C00'
+          }}
+        >
+          📋 Pending Tokens ({pendingTokens.length})
+        </button>
+      )}
 
       <button className="history-btn" onClick={() => setShowHistoryPage(true)}>
         📜 Transaction History
