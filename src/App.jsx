@@ -1,1504 +1,166 @@
-import { useState, useEffect, useRef } from 'react'
-import { CashuMint, CashuWallet, getEncodedToken, getDecodedToken } from '@cashu/cashu-ts'
-import { generateMnemonic, validateMnemonic, mnemonicToSeedSync } from '@scure/bip39'
-import { wordlist } from '@scure/bip39/wordlists/english.js'
-import CryptoJS from 'crypto-js'
+import { useState, useEffect } from 'react'
+import { CashuMint, CashuWallet, getDecodedToken } from '@cashu/cashu-ts'
 import './App.css'
 
-const DEFAULT_MINTS = [
-  { name: 'Minibits', url: 'https://mint.minibits.cash/Bitcoin' },
-  { name: 'Kashu', url: 'https://kashu.me' }
-]
-
-const WALLET_NAME = 'Satoshi Pay'
-
-// Vibration helper
-const vibrate = (pattern = [100]) => {
-  if ('vibrate' in navigator) {
-    navigator.vibrate(pattern)
-  }
-}
-
-// ✅ NEW: Seed phrase utilities
-const generateWalletSeed = () => {
-  return generateMnemonic(wordlist) // 12-word BIP39 mnemonic
-}
-
-const deriveMasterKey = (seed) => {
-  return mnemonicToSeedSync(seed)  // Returns Uint8Array for wallet
-}
-
-const deriveEncryptionKey = (seed) => {
-  const seedBuffer = mnemonicToSeedSync(seed)
-  return CryptoJS.SHA256(seedBuffer.toString('hex')).toString()  // For encryption
-}
-
-const encryptProofs = (proofs, masterKey) => {
-  return CryptoJS.AES.encrypt(JSON.stringify(proofs), masterKey).toString()
-}
-
-const decryptProofs = (encryptedData, masterKey) => {
-  try {
-    const bytes = CryptoJS.AES.decrypt(encryptedData, masterKey)
-    return JSON.parse(bytes.toString(CryptoJS.enc.Utf8))
-  } catch (err) {
-    throw new Error('Invalid seed phrase or corrupted data')
-  }
-}
-
-// Splash Screen Component
-function SplashScreen({ onComplete }) {
-  const [progress, setProgress] = useState(0)
-
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setProgress(prev => {
-        if (prev >= 100) {
-          clearInterval(timer)
-          setTimeout(onComplete, 300)
-          return 100
-        }
-        return prev + 5
-      })
-    }, 50)
-
-    return () => clearInterval(timer)
-  }, [onComplete])
-
-  return (
-    <div style={{
-      position: 'fixed',
-      top: 0,
-      left: 0,
-      right: 0,
-      bottom: 0,
-      background: 'linear-gradient(135deg, #1a1a1a 0%, #2d1810 100%)',
-      display: 'flex',
-      flexDirection: 'column',
-      alignItems: 'center',
-      justifyContent: 'center',
-      zIndex: 10000
-    }}>
-      <img
-        src="/satoshi-pay-wallet/icon-192.png"
-        alt="Logo"
-        style={{
-          width: '120px',
-          height: '120px',
-          marginBottom: '1em',
-          borderRadius: '30px',
-          animation: 'pulse 2s ease-in-out infinite'
-        }}
-      />
-      <h1 style={{
-        fontSize: '2em',
-        fontWeight: 'bold',
-        background: 'linear-gradient(90deg, #FFD700, #FF8C00)',
-        WebkitBackgroundClip: 'text',
-        WebkitTextFillColor: 'transparent',
-        marginBottom: '0.5em'
-      }}>
-        {WALLET_NAME}
-      </h1>
-      <p style={{
-        fontSize: '0.9em',
-        opacity: 0.7,
-        marginBottom: '2em'
-      }}>
-        Bitcoin Ecash Wallet
-      </p>
-
-      <div style={{
-        width: '200px',
-        height: '4px',
-        background: 'rgba(255, 255, 255, 0.1)',
-        borderRadius: '2px',
-        overflow: 'hidden'
-      }}>
-        <div style={{
-          width: `${progress}%`,
-          height: '100%',
-          background: 'linear-gradient(90deg, #FFD700, #FF8C00)',
-          transition: 'width 0.3s ease'
-        }} />
-      </div>
-
-      <style>{`
-        @keyframes pulse {
-          0%, 100% { transform: scale(1); opacity: 1; }
-          50% { transform: scale(1.05); opacity: 0.9; }
-        }
-      `}</style>
-    </div>
-  )
-}
-
-// ✅ COMPLETE FIX: Seed Phrase Backup Screen
-function SeedPhraseBackup({ seedPhrase, onConfirm, onCancel, isNewWallet }) {
-  const [confirmed, setConfirmed] = useState(false)
-  const [userWords, setUserWords] = useState(Array(12).fill(''))
-  const [verifyMode, setVerifyMode] = useState(false)
-  const [verifyError, setVerifyError] = useState('')
-
-  // ✅ Safety check: if no seed phrase, show loading
-  if (!seedPhrase || seedPhrase.trim() === '') {
-    return (
-      <div className="app">
-        <div className="card">
-          <p style={{ textAlign: 'center' }}>Generating seed phrase...</p>
-        </div>
-      </div>
-    )
-  }
-
-  const words = seedPhrase.split(' ')
-
-  // ✅ Safety check: make sure we have exactly 12 words
-  if (words.length !== 12) {
-    return (
-      <div className="app">
-        <div className="card" style={{ borderColor: '#ff6b6b' }}>
-          <h3 style={{ color: '#ff6b6b' }}>⚠️ Error</h3>
-          <p>Invalid seed phrase (expected 12 words, got {words.length})</p>
-          <p style={{ fontSize: '0.8em', wordBreak: 'break-all', marginTop: '1em' }}>
-            {seedPhrase}
-          </p>
-        </div>
-      </div>
-    )
-  }
-
-  const handleVerify = () => {
-    const userPhrase = userWords.join(' ')
-    if (userPhrase === seedPhrase) {
-      vibrate([100, 50, 100])
-      onConfirm()
-    } else {
-      setVerifyError('❌ Words do not match! Please try again.')
-      vibrate([200, 100, 200])
-      setTimeout(() => setVerifyError(''), 3000)
-    }
-  }
-
-  return (
-    <div className="app">
-      <header>
-        {!isNewWallet && <button className="back-btn" onClick={onCancel}>← Back</button>}
-        <h1>🔐 {verifyMode ? 'Verify' : 'Backup'} Wallet</h1>
-      </header>
-
-      {!verifyMode ? (
-        <>
-          <div className="card" style={{ borderColor: '#ff6b6b' }}>
-            <h3 style={{ color: '#ff6b6b' }}>⚠️ CRITICAL: Write This Down!</h3>
-            <p style={{ fontSize: '0.9em', lineHeight: '1.6', marginBottom: '1em' }}>
-              This is your <strong>recovery phrase</strong>. Write it down on paper and keep it safe.
-              <br/><br/>
-              ❌ <strong>Never share it with anyone</strong><br/>
-              ❌ <strong>Don't screenshot or save digitally</strong><br/>
-              ✅ <strong>Store it offline and securely</strong>
-            </p>
-          </div>
-
-          <div className="card">
-            {/* ✅ SHOW THE 12 WORDS */}
-            <div style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(2, 1fr)',
-              gap: '0.8em',
-              marginBottom: '1em'
-            }}>
-              {words.map((word, idx) => (
-                <div key={idx} style={{
-                  background: 'rgba(255, 215, 0, 0.1)',
-                  padding: '1em 0.8em',
-                  borderRadius: '8px',
-                  border: '1px solid rgba(255, 215, 0, 0.3)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '0.5em'
-                }}>
-                  <span style={{ 
-                    opacity: 0.5, 
-                    fontSize: '0.75em',
-                    minWidth: '20px'
-                  }}>
-                    {idx + 1}.
-                  </span>
-                  <strong style={{ 
-                    fontSize: '1em',
-                    color: '#FFD700',
-                    flex: 1,
-                    wordBreak: 'break-word'
-                  }}>
-                    {word}
-                  </strong>
-                </div>
-              ))}
-            </div>
-
-            {/* ✅ ALSO ADD A COPY BUTTON */}
-            <button
-              className="copy-btn"
-              onClick={() => {
-                navigator.clipboard.writeText(seedPhrase)
-                alert('⚠️ Seed phrase copied! Remember to delete from clipboard after writing it down.')
-              }}
-              style={{ 
-                marginTop: '0.5em',
-                background: 'rgba(255, 215, 0, 0.1)',
-                color: '#FFD700',
-                fontSize: '0.9em'
-              }}
-            >
-              📋 Copy to Clipboard (Use carefully!)
-            </button>
-          </div>
-
-          <div className="card">
-            <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', gap: '0.5em' }}>
-              <input
-                type="checkbox"
-                checked={confirmed}
-                onChange={(e) => setConfirmed(e.target.checked)}
-                style={{ width: '20px', height: '20px', cursor: 'pointer' }}
-              />
-              <span style={{ fontSize: '0.95em' }}>
-                I have written down my recovery phrase on paper
-              </span>
-            </label>
-          </div>
-
-          <button
-            className="primary-btn"
-            onClick={() => setVerifyMode(true)}
-            disabled={!confirmed}
-          >
-            Continue to Verification
-          </button>
-
-          {!isNewWallet && (
-            <button className="secondary-btn" onClick={onCancel} style={{ marginTop: '0.5em' }}>
-              Cancel
-            </button>
-          )}
-        </>
-      ) : (
-        <>
-          <div className="card">
-            <h3>Verify Your Words</h3>
-            <p style={{ fontSize: '0.9em', marginBottom: '1em', opacity: 0.8 }}>
-              Enter your 12 recovery words to confirm you wrote them down correctly:
-            </p>
-            {verifyError && (
-              <div style={{
-                background: 'rgba(255, 107, 107, 0.1)',
-                color: '#ff6b6b',
-                padding: '0.8em',
-                borderRadius: '8px',
-                marginBottom: '1em',
-                fontSize: '0.9em'
-              }}>
-                {verifyError}
-              </div>
-            )}
-            <div style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(2, 1fr)',
-              gap: '0.5em',
-              marginBottom: '1em'
-            }}>
-              {userWords.map((word, idx) => (
-                <input
-                  key={idx}
-                  type="text"
-                  placeholder={`${idx + 1}. word`}
-                  value={word}
-                  onChange={(e) => {
-                    const newWords = [...userWords]
-                    newWords[idx] = e.target.value.toLowerCase().trim()
-                    setUserWords(newWords)
-                  }}
-                  style={{
-                    padding: '0.6em',
-                    fontSize: '0.9em',
-                    background: 'rgba(255, 255, 255, 0.05)',
-                    border: '1px solid rgba(255, 255, 255, 0.1)',
-                    borderRadius: '6px',
-                    color: 'white'
-                  }}
-                />
-              ))}
-            </div>
-          </div>
-
-          <button
-            className="primary-btn"
-            onClick={handleVerify}
-            disabled={userWords.some(w => !w)}
-          >
-            Verify & Continue
-          </button>
-
-          <button
-            className="secondary-btn"
-            onClick={() => {
-              setVerifyMode(false)
-              setUserWords(Array(12).fill(''))
-              setVerifyError('')
-            }}
-            style={{ marginTop: '0.5em' }}
-          >
-            ← Back to Recovery Phrase
-          </button>
-        </>
-      )}
-    </div>
-  )
-}
-
-// ✅ NEW: Restore Wallet Screen
-function RestoreWallet({ onRestore, onCancel }) {
-  const [seedInput, setSeedInput] = useState('')
-  const [error, setError] = useState('')
-  const [loading, setLoading] = useState(false)
-
-  const handleRestore = async () => {
-    try {
-      setLoading(true)
-      setError('')
-
-      const cleanSeed = seedInput.trim().toLowerCase().replace(/\s+/g, ' ')
-      const words = cleanSeed.split(' ')
-      
-      if (words.length < 12) {
-        throw new Error('Recovery phrase must be at least 12 words.')
-      }
-
-      await onRestore(cleanSeed)
-      vibrate([100, 50, 100])
-
-    } catch (err) {
-      setError(err.message)
-      vibrate([200])
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  return (
-    <div className="app">
-      <header>
-        <button className="back-btn" onClick={onCancel}>← Cancel</button>
-        <h1>🔄 Restore Wallet</h1>
-      </header>
-
-      <div className="card">
-        <h3>Enter Recovery Phrase</h3>
-        <p style={{ fontSize: '0.9em', marginBottom: '1em', opacity: 0.8 }}>
-          Enter your 12-word recovery phrase to restore your wallet:
-        </p>
-
-        {error && (
-          <div style={{
-            background: 'rgba(255, 107, 107, 0.1)',
-            color: '#ff6b6b',
-            padding: '0.8em',
-            borderRadius: '8px',
-            marginBottom: '1em',
-            fontSize: '0.9em'
-          }}>
-            {error}
-          </div>
-        )}
-
-        <div style={{ position: 'relative', marginBottom: '1em' }}>
-          <textarea
-            placeholder="Enter your 12 recovery words separated by spaces"
-            value={seedInput}
-            onChange={(e) => setSeedInput(e.target.value)}
-            rows={4}
-            style={{
-              width: '100%',
-              padding: '0.8em',
-              paddingRight: '3.5em',
-              fontSize: '0.9em',
-              background: 'rgba(255, 255, 255, 0.05)',
-              border: '1px solid rgba(255, 255, 255, 0.1)',
-              borderRadius: '8px',
-              color: 'white',
-              resize: 'vertical'
-            }}
-          />
-          <button
-            onClick={async () => {
-              try {
-                const text = await navigator.clipboard.readText()
-                setSeedInput(text.trim())
-                vibrate([50])
-              } catch (err) {
-                setError('Failed to paste from clipboard')
-              }
-            }}
-            style={{
-              position: 'absolute',
-              right: '8px',
-              top: '8px',
-              background: 'rgba(255, 215, 0, 0.2)',
-              border: '1px solid rgba(255, 215, 0, 0.3)',
-              borderRadius: '6px',
-              color: '#FFD700',
-              padding: '0.5em 0.8em',
-              fontSize: '0.85em',
-              cursor: 'pointer'
-            }}
-          >
-            📋 Paste
-          </button>
-        </div>
-
-        <button
-          className="primary-btn"
-          onClick={handleRestore}
-          disabled={loading || !seedInput.trim()}
-        >
-          {loading ? 'Restoring...' : 'Restore Wallet'}
-        </button>
-      </div>
-
-      <div className="card" style={{ borderColor: 'rgba(255, 215, 0, 0.3)' }}>
-        <h4 style={{ color: '#FFD700', fontSize: '0.95em' }}>💡 Tips:</h4>
-        <ul style={{ fontSize: '0.85em', lineHeight: '1.6', paddingLeft: '1.2em', opacity: 0.8 }}>
-          <li>Must be exactly 12 words</li>
-          <li>Separated by spaces</li>
-          <li>All lowercase</li>
-          <li>Check for typos carefully</li>
-        </ul>
-      </div>
-    </div>
-  )
-}
-
-// Install PWA Button Component
-function InstallButton() {
-  const [deferredPrompt, setDeferredPrompt] = useState(null)
-  const [showInstall, setShowInstall] = useState(false)
-
-  useEffect(() => {
-    const handler = (e) => {
-      e.preventDefault()
-      setDeferredPrompt(e)
-      setShowInstall(true)
-    }
-
-    window.addEventListener('beforeinstallprompt', handler)
-
-    if (window.matchMedia('(display-mode: standalone)').matches) {
-      setShowInstall(false)
-    }
-
-    return () => window.removeEventListener('beforeinstallprompt', handler)
-  }, [])
-
-  const handleInstall = async () => {
-    if (!deferredPrompt) return
-
-    deferredPrompt.prompt()
-    const { outcome } = await deferredPrompt.userChoice
-
-    if (outcome === 'accepted') {
-      setShowInstall(false)
-    }
-
-    setDeferredPrompt(null)
-  }
-
-  if (!showInstall) return null
-
-  return (
-    <button
-      onClick={handleInstall}
-      style={{
-        position: 'fixed',
-        bottom: '80px',
-        right: '20px',
-        background: 'linear-gradient(135deg, #FF8C00, #FFD700)',
-        border: 'none',
-        borderRadius: '50px',
-        padding: '0.8em 1.5em',
-        color: '#1a1a1a',
-        fontWeight: 'bold',
-        fontSize: '0.9em',
-        cursor: 'pointer',
-        boxShadow: '0 4px 20px rgba(255, 140, 0, 0.4)',
-        zIndex: 1000,
-        display: 'flex',
-        alignItems: 'center',
-        gap: '0.5em',
-        animation: 'slideIn 0.5s ease-out'
-      }}
-    >
-      <span>📲</span>
-      <span>Install App</span>
-      <style>{`
-        @keyframes slideIn {
-          from {
-            transform: translateX(200px);
-            opacity: 0;
-          }
-          to {
-            transform: translateX(0);
-            opacity: 1;
-          }
-        }
-      `}</style>
-    </button>
-  )
-}
-
-// Pending Tokens Component
-function PendingTokensView({
-  pendingTokens,
-  onReclaim,
-  onCopy,
-  onRemove,
-  onClose
-}) {
-  return (
-    <div className="app">
-      <header>
-        <button className="back-btn" onClick={onClose}>← Back</button>
-        <h1>📋 Pending Tokens</h1>
-      </header>
-
-      {pendingTokens.length === 0 ? (
-        <div className="card">
-          <p style={{ textAlign: 'center', opacity: 0.6 }}>
-            No pending tokens
-          </p>
-          <p style={{ fontSize: '0.85em', opacity: 0.5, marginTop: '0.5em', textAlign: 'center' }}>
-            Unsent tokens will appear here until claimed by recipient
-          </p>
-        </div>
-      ) : (
-        pendingTokens.map(pending => (
-          <div key={pending.id} className="card" style={{ borderColor: '#FF8C00' }}>
-            <div style={{ marginBottom: '1em' }}>
-              <div style={{ fontSize: '1.2em', fontWeight: 'bold', color: '#FF8C00' }}>
-                {pending.amount} sats
-              </div>
-              <div style={{ fontSize: '0.8em', opacity: 0.6 }}>
-                Created {new Date(pending.timestamp).toLocaleString()}
-              </div>
-            </div>
-
-            <div className="token-box">
-              <textarea
-                readOnly
-                value={pending.token}
-                rows={3}
-                style={{ fontSize: '0.7em', marginBottom: '0.5em' }}
-              />
-            </div>
-
-            <button
-              className="copy-btn"
-              onClick={() => onCopy(pending.token)}
-              style={{ marginBottom: '0.5em' }}
-            >
-              📋 Copy Token
-            </button>
-
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5em' }}>
-              <button
-                className="secondary-btn"
-                onClick={() => onReclaim(pending)}
-              >
-                ↩️ Reclaim
-              </button>
-              <button
-                className="cancel-btn"
-                onClick={() => onRemove(pending.id)}
-              >
-                🗑️ Delete
-              </button>
-            </div>
-
-            <p style={{ fontSize: '0.75em', opacity: 0.5, marginTop: '0.5em' }}>
-              💡 This token will auto-delete once claimed by recipient
-            </p>
-          </div>
-        ))
-      )}
-    </div>
-  )
-}
-
-// QR Scanner Component
-function QRScanner({ onScan, onClose, mode }) {
-  const videoRef = useRef(null)
-  const canvasRef = useRef(null)
-  const [error, setError] = useState('')
-  const [scanning, setScanning] = useState(false)
-  const animationFrameRef = useRef(null)
-  const streamRef = useRef(null)
-
-  useEffect(() => {
-    let isActive = true
-
-    const startCamera = async () => {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            facingMode: { ideal: "environment" },
-            width: { ideal: 1280 },
-            height: { ideal: 720 }
-          }
-        })
-
-        if (!isActive) {
-          stream.getTracks().forEach(track => track.stop())
-          return
-        }
-
-        streamRef.current = stream
-
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream
-          videoRef.current.setAttribute('playsinline', true)
-          videoRef.current.play()
-          setScanning(true)
-
-          videoRef.current.onloadedmetadata = () => {
-            scanQRCode()
-          }
-        }
-
-      } catch (err) {
-        console.error('Camera error:', err)
-        if (err.name === 'NotAllowedError') {
-          setError('Camera permission denied. Please allow camera access.')
-        } else if (err.name === 'NotFoundError') {
-          setError('No camera found on this device.')
-        } else if (err.name === 'NotReadableError') {
-          setError('Camera is busy. Close other apps using the camera.')
-        } else {
-          setError(`Camera error: ${err.message}`)
-        }
-      }
-    }
-
-    const scanQRCode = async () => {
-      if (!isActive || !videoRef.current || !canvasRef.current) return
-
-      const video = videoRef.current
-      const canvas = canvasRef.current
-      const ctx = canvas.getContext('2d')
-
-      const jsQR = (await import('jsqr')).default
-
-      const scan = () => {
-        if (!isActive || video.readyState !== video.HAVE_ENOUGH_DATA) {
-          animationFrameRef.current = requestAnimationFrame(scan)
-          return
-        }
-
-        canvas.width = video.videoWidth
-        canvas.height = video.videoHeight
-
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
-
-        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height)
-
-        const code = jsQR(imageData.data, imageData.width, imageData.height, {
-          inversionAttempts: "dontInvert"
-        })
-
-        if (code) {
-          console.log('✅ QR Code detected:', code.data)
-          isActive = false
-          stopCamera()
-          onScan(code.data)
-          return
-        }
-
-        animationFrameRef.current = requestAnimationFrame(scan)
-      }
-
-      scan()
-    }
-
-    const stopCamera = () => {
-      if (animationFrameRef.current) {
-        cancelAnimationFrame(animationFrameRef.current)
-      }
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach(track => track.stop())
-      }
-    }
-
-    startCamera()
-
-    return () => {
-      isActive = false
-      stopCamera()
-    }
-  }, [onScan])
-
-  const handleClose = () => {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => track.stop())
-    }
-    if (animationFrameRef.current) {
-      cancelAnimationFrame(animationFrameRef.current)
-    }
-    onClose()
-  }
-
-  return (
-    <div style={{
-      position: 'fixed',
-      top: 0,
-      left: 0,
-      right: 0,
-      bottom: 0,
-      background: '#000',
-      zIndex: 9999,
-      display: 'flex',
-      flexDirection: 'column'
-    }}>
-      <div style={{
-        padding: '1em',
-        background: 'rgba(255, 255, 255, 0.95)',
-        color: '#000',
-        textAlign: 'center',
-        fontWeight: '500'
-      }}>
-        {mode === 'send' ? '📸 Scan Lightning invoice or Cashu token' : '📸 Scan Cashu token'}
-      </div>
-
-      {error && (
-        <div style={{
-          margin: '1em',
-          padding: '1.5em',
-          background: 'rgba(255, 107, 107, 0.95)',
-          borderRadius: '12px',
-          color: 'white',
-          lineHeight: '1.5'
-        }}>
-          <div style={{ fontWeight: 'bold', marginBottom: '0.5em' }}>⚠️ Error</div>
-          {error}
-          <div style={{ marginTop: '1em', fontSize: '0.9em' }}>
-            Try: Close other camera apps and reload the page
-          </div>
-        </div>
-      )}
-
-      <div style={{
-        flex: 1,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        padding: '1em',
-        position: 'relative',
-        overflow: 'hidden'
-      }}>
-        <video
-          ref={videoRef}
-          style={{
-            width: '100%',
-            maxWidth: '500px',
-            borderRadius: '16px',
-            display: error ? 'none' : 'block'
-          }}
-          playsInline
-          muted
-        />
-
-        <canvas
-          ref={canvasRef}
-          style={{ display: 'none' }}
-        />
-
-        {scanning && !error && (
-          <div style={{
-            position: 'absolute',
-            width: '250px',
-            height: '250px',
-            border: '3px solid #FFD700',
-            borderRadius: '16px',
-            boxShadow: '0 0 0 9999px rgba(0, 0, 0, 0.5)'
-          }}>
-            <div style={{
-              position: 'absolute',
-              top: '-3px',
-              left: '-3px',
-              width: '40px',
-              height: '40px',
-              borderTop: '5px solid #FFD700',
-              borderLeft: '5px solid #FFD700'
-            }}/>
-            <div style={{
-              position: 'absolute',
-              top: '-3px',
-              right: '-3px',
-              width: '40px',
-              height: '40px',
-              borderTop: '5px solid #FFD700',
-              borderRight: '5px solid #FFD700'
-            }}/>
-            <div style={{
-              position: 'absolute',
-              bottom: '-3px',
-              left: '-3px',
-              width: '40px',
-              height: '40px',
-              borderBottom: '5px solid #FFD700',
-              borderLeft: '5px solid #FFD700'
-            }}/>
-            <div style={{
-              position: 'absolute',
-              bottom: '-3px',
-              right: '-3px',
-              width: '40px',
-              height: '40px',
-              borderBottom: '5px solid #FFD700',
-              borderRight: '5px solid #FFD700'
-            }}/>
-            <div style={{
-              position: 'absolute',
-              top: '0',
-              left: '0',
-              right: '0',
-              height: '3px',
-              background: 'linear-gradient(90deg, transparent, #FFD700, transparent)',
-              animation: 'scan 2s linear infinite'
-            }}/>
-          </div>
-        )}
-      </div>
-
-      <div style={{
-        padding: '1.5em',
-        background: 'rgba(0, 0, 0, 0.95)',
-        borderTop: '1px solid rgba(255, 255, 255, 0.1)'
-      }}>
-        <button
-          onClick={handleClose}
-          style={{
-            width: '100%',
-            maxWidth: '300px',
-            margin: '0 auto',
-            display: 'block',
-            padding: '1em 2em',
-            background: 'rgba(255, 255, 255, 0.15)',
-            border: 'none',
-            borderRadius: '12px',
-            color: 'white',
-            fontSize: '1em',
-            fontWeight: '600',
-            cursor: 'pointer'
-          }}
-        >
-          CLOSE
-        </button>
-      </div>
-
-      <style>{`
-        @keyframes scan {
-          0% { transform: translateY(0); }
-          100% { transform: translateY(250px); }
-        }
-      `}</style>
-    </div>
-  )
-}
-
-function SendViaLightning({
-  wallet,
-  mintUrl,
-  currentMintBalance,
-  getProofsForMint,
-  calculateAllBalances,
-  addTransaction,
-  resetSendPage,
-  setError,
-  setSuccess,
-  setLoading,
-  loading,
-  lightningInvoice,
-  setLightningInvoice,
-  decodedInvoice,
-  setDecodedInvoice
-}) {
-  const [sendingPayment, setSendingPayment] = useState(false)
-
-  const handleDecodeInvoice = async () => {
-    if (!lightningInvoice.trim()) {
-      setError('Please paste a Lightning invoice')
-      return
-    }
-
-    try {
-      setLoading(true)
-      setError('')
-
-      const invoice = lightningInvoice.trim().toLowerCase()
-      if (!invoice.startsWith('ln')) {
-        throw new Error('Invalid Lightning invoice format')
-      }
-
-      const meltQuote = await wallet.createMeltQuote(lightningInvoice.trim())
-
-      setDecodedInvoice({
-        amount: meltQuote.amount,
-        fee: meltQuote.fee_reserve,
-        total: meltQuote.amount + meltQuote.fee_reserve,
-        quote: meltQuote.quote
-      })
-
-      setSuccess('Invoice decoded! Review and confirm.')
-
-    } catch (err) {
-      setError(`Failed to decode invoice: ${err.message}`)
-      setDecodedInvoice(null)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const handlePayInvoice = async () => {
-    if (!wallet || !decodedInvoice) return
-
-    try {
-      setSendingPayment(true)
-      setError('')
-
-      const totalAmount = decodedInvoice.total
-
-      if (currentMintBalance < totalAmount) {
-        throw new Error(`Insufficient balance. Need ${totalAmount} sats (including ${decodedInvoice.fee} sats fee)`)
-      }
-
-      const proofs = getProofsForMint(mintUrl)
-
-      if (!proofs || proofs.length === 0) {
-        throw new Error('No proofs available')
-      }
-
-      const sendResult = await wallet.send(totalAmount, proofs)
-      let proofsToKeep = []
-      let proofsToSend = []
-
-      if (sendResult) {
-        proofsToKeep = sendResult.keep || sendResult.returnChange || sendResult.change || []
-        proofsToSend = sendResult.send || sendResult.sendProofs || []
-      }
-
-      if (!proofsToSend || proofsToSend.length === 0) {
-        throw new Error('Failed to prepare proofs for payment')
-      }
-
-      let meltResponse
-      try {
-        meltResponse = await wallet.meltTokens(decodedInvoice.quote, proofsToSend)
-      } catch (firstError) {
-        meltResponse = await wallet.meltTokens(
-          {
-            quote: decodedInvoice.quote,
-            amount: decodedInvoice.amount,
-            fee_reserve: decodedInvoice.fee
-          },
-          proofsToSend
-        )
-      }
-
-      if (meltResponse && meltResponse.isPaid === false) {
-        throw new Error('Invoice payment failed at the mint')
-      }
-
-      const changeProofs = meltResponse?.change || []
-      const allRemainingProofs = [...proofsToKeep, ...changeProofs]
-
-      const key = `cashu_proofs_${btoa(mintUrl)}`
-      localStorage.setItem(key, JSON.stringify(allRemainingProofs))
-      calculateAllBalances()
-
-      addTransaction('send', decodedInvoice.amount, 'Paid Lightning invoice', mintUrl)
-
-      vibrate([100, 50, 100])
-
-      setSuccess(`✅ Sent ${decodedInvoice.amount} sats via Lightning!`)
-
-      setTimeout(() => {
-        resetSendPage()
-        setDecodedInvoice(null)
-        setLightningInvoice('')
-      }, 2000)
-
-    } catch (err) {
-      let errorMessage = 'Unknown error occurred'
-
-      if (err?.message) {
-        errorMessage = err.message
-      } else if (err?.detail) {
-        errorMessage = err.detail
-      } else if (typeof err === 'string') {
-        errorMessage = err
-      } else if (err?.error) {
-        errorMessage = typeof err.error === 'string' ? err.error : JSON.stringify(err.error)
-      }
-
-      setError(`Payment failed: ${errorMessage}`)
-    } finally {
-      setSendingPayment(false)
-    }
-  }
-
-  useEffect(() => {
-    if (lightningInvoice && !decodedInvoice) {
-      handleDecodeInvoice()
-    }
-  }, [lightningInvoice])
-
-  return (
-    <div className="card">
-      <h3>⚡ Send via Lightning</h3>
-
-      {!decodedInvoice ? (
-        <>
-          <p style={{ marginBottom: '1em' }}>
-            Paste a Lightning invoice to pay
-          </p>
-          <div className="token-box">
-            <textarea
-              placeholder="Paste Lightning invoice here (lnbc...)"
-              value={lightningInvoice}
-              onChange={(e) => setLightningInvoice(e.target.value)}
-              rows={4}
-              style={{ fontSize: '0.75em' }}
-            />
-          </div>
-          <button
-            className="primary-btn"
-            onClick={handleDecodeInvoice}
-            disabled={loading || !lightningInvoice.trim()}
-          >
-            {loading ? 'Decoding...' : 'Decode Invoice'}
-          </button>
-        </>
-      ) : (
-        <>
-          <div style={{
-            background: 'rgba(81, 207, 102, 0.1)',
-            padding: '1em',
-            borderRadius: '8px',
-            marginBottom: '1em'
-          }}>
-            <div style={{ marginBottom: '0.5em' }}>
-              <span style={{ opacity: 0.7 }}>Amount:</span>
-              <span style={{ float: 'right', fontWeight: 'bold' }}>{decodedInvoice.amount} sats</span>
-            </div>
-            <div style={{ marginBottom: '0.5em' }}>
-              <span style={{ opacity: 0.7 }}>Network Fee:</span>
-              <span style={{ float: 'right' }}>{decodedInvoice.fee} sats</span>
-            </div>
-            <div style={{ borderTop: '1px solid rgba(255,255,255,0.1)', paddingTop: '0.5em', marginTop: '0.5em' }}>
-              <span style={{ opacity: 0.7 }}>Total:</span>
-              <span style={{ float: 'right', fontWeight: 'bold', color: '#FF8C00' }}>{decodedInvoice.total} sats</span>
-            </div>
-          </div>
-
-          <button
-            className="primary-btn"
-            onClick={handlePayInvoice}
-            disabled={sendingPayment || currentMintBalance < decodedInvoice.total}
-            style={{ marginBottom: '0.5em' }}
-          >
-            {sendingPayment ? 'Sending...' : `Pay ${decodedInvoice.total} sats`}
-          </button>
-
-          <button
-            className="secondary-btn"
-            onClick={() => {
-              setDecodedInvoice(null)
-              setLightningInvoice('')
-            }}
-            disabled={sendingPayment}
-          >
-            Cancel
-          </button>
-        </>
-      )}
-
-      <button
-        className="back-btn"
-        style={{ marginTop: '1em', position: 'relative', left: 0, transform: 'none' }}
-        onClick={resetSendPage}
-        disabled={sendingPayment}
-      >
-        ← Change Method
-      </button>
-    </div>
-  )
-}
+// Hooks
+import { useWallet } from './hooks/useWallet.js'
+import { usePendingTokens } from './hooks/usePendingTokens.js'
+
+// Utils
+import { generateQR, vibrate, WALLET_NAME } from './utils/cashu.js'
+import {
+  savePendingQuote,
+  getPendingQuote,
+  clearPendingQuote
+} from './utils/storage.js'
+
+// Components
+import SplashScreen from './components/SplashScreen.jsx'
+import SeedPhraseBackup from './components/SeedPhraseBackup.jsx'
+import RestoreWallet from './components/RestoreWallet.jsx'
+import InstallButton from './components/InstallButton.jsx'
+import QRScanner from './components/QRScanner.jsx'
+import PendingTokens from './components/PendingTokens.jsx'
+import HistoryPage from './components/HistoryPage.jsx'
+import SettingsPage from './components/SettingsPage.jsx'
+import SendPage from './components/SendPage.jsx'
+import ReceivePage from './components/ReceivePage.jsx'
 
 function App() {
+  // Splash screen
   const [showSplash, setShowSplash] = useState(true)
-  const [wallet, setWallet] = useState(null)
-  const [mintUrl, setMintUrl] = useState(DEFAULT_MINTS[0].url)
-  const [customMints, setCustomMints] = useState([])
-  const [allMints, setAllMints] = useState(DEFAULT_MINTS)
-  const [showMintSettings, setShowMintSettings] = useState(false)
-  const [showAddMint, setShowAddMint] = useState(false)
-  const [newMintName, setNewMintName] = useState('')
-  const [newMintUrl, setNewMintUrl] = useState('')
 
-  const [balances, setBalances] = useState({})
-  const [totalBalance, setTotalBalance] = useState(0)
+  // Wallet hook
+  const walletState = useWallet()
+  const {
+    wallet,
+    mintUrl,
+    setMintUrl,
+    allMints,
+    mintInfo,
+    balances,
+    totalBalance,
+    currentMintBalance,
+    calculateAllBalances,
+    transactions,
+    addTransaction,
+    updateTransactionStatus,
+    seedPhrase,
+    setSeedPhrase,
+    isNewWallet,
+    showSeedBackup,
+    setShowSeedBackup,
+    handleSeedBackupConfirm,
+    handleRestoreWallet,
+    bip39Seed,
+    addCustomMint,
+    removeCustomMint,
+    resetMint,
+    getProofs,
+    saveProofs,
+    loading,
+    setLoading,
+    error,
+    setError,
+    success,
+    setSuccess
+  } = walletState
 
-  const [mintAmount, setMintAmount] = useState('')
-  const [sendAmount, setSendAmount] = useState('')
-  const [receiveToken, setReceiveToken] = useState('')
-  const [generatedToken, setGeneratedToken] = useState('')
-  const [generatedQR, setGeneratedQR] = useState('')
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
-  const [success, setSuccess] = useState('')
-  const [mintInfo, setMintInfo] = useState(null)
-  const [lightningInvoice, setLightningInvoice] = useState('')
-  const [lightningInvoiceQR, setLightningInvoiceQR] = useState('')
-  const [currentQuote, setCurrentQuote] = useState(null)
+  // Pending tokens hook
+  const {
+    pendingTokens,
+    addPendingToken,
+    removePendingToken,
+    reclaimPendingToken
+  } = usePendingTokens(wallet, bip39Seed, updateTransactionStatus)
+
+  // Page routing
   const [showSendPage, setShowSendPage] = useState(false)
   const [showReceivePage, setShowReceivePage] = useState(false)
   const [showHistoryPage, setShowHistoryPage] = useState(false)
-  const [sendMethod, setSendMethod] = useState(null)
-  const [receiveMethod, setReceiveMethod] = useState(null)
-  const [transactions, setTransactions] = useState([])
-  const [decodedInvoice, setDecodedInvoice] = useState(null)
+  const [showMintSettings, setShowMintSettings] = useState(false)
+  const [showPendingTokens, setShowPendingTokens] = useState(false)
+  const [showRestoreWallet, setShowRestoreWallet] = useState(false)
 
+  // QR Scanner
   const [showScanner, setShowScanner] = useState(false)
   const [scanMode, setScanMode] = useState(null)
 
-  const [pendingTokens, setPendingTokens] = useState([])
-  const [showPendingTokens, setShowPendingTokens] = useState(false)
+  // Mint/Receive state
+  const [mintAmount, setMintAmount] = useState('')
+  const [lightningInvoice, setLightningInvoice] = useState('')
+  const [lightningInvoiceQR, setLightningInvoiceQR] = useState('')
+  const [currentQuote, setCurrentQuote] = useState(null)
 
-  // ✅ NEW: Seed phrase states
-  const [seedPhrase, setSeedPhrase] = useState('')
-  const [showSeedBackup, setShowSeedBackup] = useState(false)
-  const [showRestoreWallet, setShowRestoreWallet] = useState(false)
-  const [isNewWallet, setIsNewWallet] = useState(false)
-  const [masterKey, setMasterKey] = useState('')
-  const [bip39Seed, setBip39Seed] = useState(null)  // Add this line
-
-  // ✅ NEW: Initialize or restore wallet on mount
+  // Global success handler for pending tokens hook
   useEffect(() => {
-    const initializeWallet = async () => {
-      const existingSeed = localStorage.getItem('wallet_seed')
-      
-      if (existingSeed) {
-        // Existing wallet - derive master key
-        const seed = deriveMasterKey(existingSeed)
-        const encKey = deriveEncryptionKey(existingSeed)
-        setBip39Seed(seed)
-        setMasterKey(encKey)
-        setSeedPhrase(existingSeed)
-        loadCustomMints()
-        initWallet()
-        loadTransactions()
-        calculateAllBalances()
-      } else {
-        // New wallet - generate seed
-        const newSeed = generateWalletSeed()
-        console.log("✅ Generated new seed:", newSeed)
-        setSeedPhrase(newSeed)
-        localStorage.setItem("wallet_seed", newSeed)
-        setIsNewWallet(true)
-        setTimeout(() => setShowSeedBackup(true), 200)
-      }
+    window.showSuccess = (msg) => {
+      setSuccess(msg)
+      setTimeout(() => setSuccess(''), 3000)
     }
+    return () => {
+      delete window.showSuccess
+    }
+  }, [setSuccess])
 
-    initializeWallet()
-  }, [])
-
-  // ✅ NEW: Handle seed backup confirmation
-  const handleSeedBackupConfirm = () => {
-    localStorage.setItem('wallet_seed', seedPhrase)
-    localStorage.setItem('wallet_backed_up', 'true')
-    const seed = deriveMasterKey(seedPhrase)
-    const encKey = deriveEncryptionKey(seedPhrase)
-    setBip39Seed(seed)
-    setMasterKey(encKey)
-    setShowSeedBackup(false)
-    setIsNewWallet(false)
-    
-    // Now initialize wallet properly
-    loadCustomMints()
-    initWallet()
-    loadTransactions()
-    calculateAllBalances()
-  }
-
-  // ✅ NEW: Handle wallet restore
-  const handleRestoreWallet = async (restoredSeed) => {
-    // Clear existing wallet data
-    allMints.forEach(mint => {
-      const key = `cashu_proofs_${btoa(mint.url)}`
-      localStorage.removeItem(key)
-    })
-    localStorage.removeItem('cashu_transactions')
-    localStorage.removeItem('pending_tokens')
-
-    // Set new seed
-    localStorage.setItem('wallet_seed', restoredSeed)
-    localStorage.setItem('wallet_backed_up', 'true')
-    setSeedPhrase(restoredSeed)
-    
-    const seed = deriveMasterKey(restoredSeed)
-    const encKey = deriveEncryptionKey(restoredSeed)
-    setBip39Seed(seed)
-    setMasterKey(encKey)
-    
-    setShowRestoreWallet(false)
-    
-    // Reinitialize wallet
-    loadCustomMints()
-    await initWallet()
-    calculateAllBalances()
-    
-    setSuccess('✅ Wallet restored successfully!')
-    setTimeout(() => setSuccess(''), 3000)
-  }
-
+  // Check pending quotes on mount and interval
   useEffect(() => {
-    const loadPendingTokens = () => {
-      try {
-        const saved = localStorage.getItem('pending_tokens')
-        if (saved) {
-          setPendingTokens(JSON.parse(saved))
-        }
-      } catch (err) {
-        console.error('Error loading pending tokens:', err)
-      }
-    }
-    loadPendingTokens()
-  }, [])
+    const checkPendingQuotes = async () => {
+      const pending = getPendingQuote()
 
-  useEffect(() => {
-    if (pendingTokens.length === 0 || !wallet) return
+      if (!pending) return
 
-    const checkPendingTokensSpending = async () => {
-      for (const pending of pendingTokens) {
-        try {
-          if (!pending.proofs || pending.proofs.length === 0) continue
-
-          const tokenAge = Date.now() - new Date(pending.timestamp).getTime()
-          if (tokenAge < 10000) {
-            console.log(`Skipping new token ${pending.id} (only ${Math.round(tokenAge/1000)}s old)`)
-            continue
-          }
-
-          const mint = new CashuMint(pending.mintUrl)
-          const tempWallet = new CashuWallet(mint, { bip39seed: bip39Seed })
-
-          const spentStates = await tempWallet.checkProofsSpent(pending.proofs)
-
-          const allSpent = spentStates.every(state => {
-            return state.spentProof?.spent === true ||
-                   state.spent === true ||
-                   state.state === 'SPENT'
-          })
-
-          if (allSpent) {
-            console.log(`✅ Token ${pending.id} was claimed!`)
-            
-            // Update transaction status to paid
-            if (pending.txId) {
-              updateTransactionStatus(pending.txId, 'paid')
-            }
-
-            const updated = pendingTokens.filter(t => t.id !== pending.id)
-            setPendingTokens(updated)
-            localStorage.setItem('pending_tokens', JSON.stringify(updated))
-
-            vibrate([100, 50, 100])
-            setSuccess(`✅ ${pending.amount} sats token was claimed!`)
-            setTimeout(() => setSuccess(''), 3000)
-          }
-
-        } catch (err) {
-          console.error(`Error checking token ${pending.id}:`, err)
-        }
-      }
-    }
-
-    const interval = setInterval(checkPendingTokensSpending, 30000)
-
-    return () => clearInterval(interval)
-  }, [pendingTokens, wallet])
-
-  const savePendingToken = (token, amount, mintUrl, proofs, txId) => {
-    const pending = {
-      id: Date.now(),
-      token,
-      amount,
-      mintUrl,
-      proofs,
-      timestamp: new Date().toISOString(),
-      txId  // Link to transaction
-    }
-    const updated = [pending, ...pendingTokens]
-    setPendingTokens(updated)
-    localStorage.setItem('pending_tokens', JSON.stringify(updated))
-  }
-
-  const removePendingToken = (tokenId) => {
-    if (confirm('Delete this token? This cannot be undone.')) {
-      const updated = pendingTokens.filter(t => t.id !== tokenId)
-      setPendingTokens(updated)
-      localStorage.setItem('pending_tokens', JSON.stringify(updated))
-      setSuccess('Token deleted')
-      setTimeout(() => setSuccess(''), 2000)
-    }
-  }
-
-  const reclaimPendingToken = async (pendingToken) => {
-    try {
-      setLoading(true)
-      setError('')
-
-      const decoded = getDecodedToken(pendingToken.token)
-      const tokenMintUrl = decoded.token[0]?.mint
-
-      const targetMint = new CashuMint(tokenMintUrl)
-      const targetWallet = new CashuWallet(targetMint, { bip39seed: bip39Seed })
-
-      const proofs = await targetWallet.receive(pendingToken.token)
-
-      if (proofs && proofs.length > 0) {
-        const existingProofs = getProofsForMint(tokenMintUrl)
-        const allProofs = [...existingProofs, ...proofs]
-        saveProofsForMint(tokenMintUrl, allProofs)
-        calculateAllBalances()
-
-        const updated = pendingTokens.filter(t => t.id !== pendingToken.id)
-        setPendingTokens(updated)
-        localStorage.setItem('pending_tokens', JSON.stringify(updated))
-
-        vibrate([200])
-
-        setSuccess(`✅ Reclaimed ${pendingToken.amount} sats!`)
-        setTimeout(() => setSuccess(''), 2000)
-      }
-    } catch (err) {
-      if (err.message?.includes('already spent') || err.message?.includes('already claimed')) {
-        setError('Token already claimed by recipient')
-        const updated = pendingTokens.filter(t => t.id !== pendingToken.id)
-        setPendingTokens(updated)
-        localStorage.setItem('pending_tokens', JSON.stringify(updated))
-      } else {
-        setError(`Could not reclaim: ${err.message}`)
-      }
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const savePendingQuote = (quote, amount, mintUrl) => {
-    const pending = {
-      quote: quote.quote,
-      amount: amount,
-      mintUrl: mintUrl,
-      timestamp: Date.now(),
-      request: quote.request
-    }
-    localStorage.setItem('pending_mint_quote', JSON.stringify(pending))
-  }
-
-  const getPendingQuote = () => {
-    try {
-      const saved = localStorage.getItem('pending_mint_quote')
-      if (saved) {
-        return JSON.parse(saved)
-      }
-    } catch (err) {
-      console.error('Error loading pending quote:', err)
-    }
-    return null
-  }
-
-  const clearPendingQuote = () => {
-    localStorage.removeItem('pending_mint_quote')
-  }
-
-  const checkPendingQuotes = async () => {
-    const pending = getPendingQuote()
-
-    if (!pending) return
-
-    const threeMinutes = 3 * 60 * 1000
-    if (Date.now() - pending.timestamp > threeMinutes) {
-      console.log('Quote expired, clearing...')
-      clearPendingQuote()
-      setLightningInvoice('')
-      setLightningInvoiceQR('')
-      setCurrentQuote(null)
-      setMintAmount('')
-      return
-    }
-
-    try {
-      const mint = new CashuMint(pending.mintUrl)
-      const tempWallet = new CashuWallet(mint, { bip39seed: bip39Seed })
-
-      const { proofs } = await tempWallet.mintTokens(pending.amount, pending.quote)
-
-      if (proofs && proofs.length > 0) {
-        const existingProofs = getProofsForMint(pending.mintUrl)
-        const allProofs = [...existingProofs, ...proofs]
-        const key = `cashu_proofs_${btoa(pending.mintUrl)}`
-        localStorage.setItem(key, JSON.stringify(allProofs))
-
-        calculateAllBalances()
-        addTransaction('receive', pending.amount, 'Minted via Lightning', pending.mintUrl)
+      const threeMinutes = 3 * 60 * 1000
+      if (Date.now() - pending.timestamp > threeMinutes) {
         clearPendingQuote()
-
-        vibrate([200])
-
-        setSuccess(`🎉 Received ${pending.amount} sats!`)
         setLightningInvoice('')
         setLightningInvoiceQR('')
         setCurrentQuote(null)
         setMintAmount('')
-
-        setTimeout(() => {
-          setSuccess('')
-        }, 2000)
-
-        return true
+        return
       }
-    } catch (err) {
-      if (err.message?.includes('not paid') || err.message?.includes('pending')) {
-        console.log('Invoice not paid yet, will check again...')
+
+      try {
+        const mint = new CashuMint(pending.mintUrl)
+        const tempWallet = new CashuWallet(mint, { bip39seed: bip39Seed })
+
+        const { proofs } = await tempWallet.mintTokens(pending.amount, pending.quote)
+
+        if (proofs && proofs.length > 0) {
+          const existingProofs = getProofs(pending.mintUrl)
+          const allProofs = [...existingProofs, ...proofs]
+          saveProofs(pending.mintUrl, allProofs)
+
+          calculateAllBalances()
+          addTransaction('receive', pending.amount, 'Minted via Lightning', pending.mintUrl)
+          clearPendingQuote()
+
+          vibrate([200])
+
+          setSuccess(`🎉 Received ${pending.amount} sats!`)
+          setLightningInvoice('')
+          setLightningInvoiceQR('')
+          setCurrentQuote(null)
+          setMintAmount('')
+
+          setTimeout(() => {
+            setSuccess('')
+          }, 2000)
+
+          return true
+        }
+      } catch (err) {
+        if (err.message?.includes('not paid') || err.message?.includes('pending')) {
+          return false
+        }
+        console.error('Error checking pending quote:', err)
         return false
       }
-
-      console.error('Error checking pending quote:', err)
-      return false
     }
-  }
 
-  useEffect(() => {
-    if (mintUrl) {
-      initWallet()
-    }
-  }, [mintUrl])
-
-  useEffect(() => {
     const checkOnMount = async () => {
       const hasPending = getPendingQuote()
       if (hasPending) {
-        console.log('📋 Found pending quote on mount, checking...')
         await checkPendingQuotes()
       }
     }
@@ -1513,204 +175,9 @@ function App() {
     }, 5000)
 
     return () => clearInterval(interval)
-  }, [wallet, allMints])
+  }, [wallet, allMints, bip39Seed, getProofs, saveProofs, calculateAllBalances, addTransaction])
 
-  const loadCustomMints = () => {
-    try {
-      const saved = localStorage.getItem('custom_mints')
-      if (saved) {
-        const custom = JSON.parse(saved)
-        setCustomMints(custom)
-        setAllMints([...DEFAULT_MINTS, ...custom])
-      }
-    } catch (err) {
-      console.error('Error loading custom mints:', err)
-    }
-  }
-
-  const saveCustomMints = (mints) => {
-    localStorage.setItem('custom_mints', JSON.stringify(mints))
-    setCustomMints(mints)
-    setAllMints([...DEFAULT_MINTS, ...mints])
-  }
-
-  const handleAddMint = () => {
-    if (!newMintName || !newMintUrl) {
-      setError('Please enter both name and URL')
-      return
-    }
-
-    const newMint = { name: newMintName, url: newMintUrl }
-    const updated = [...customMints, newMint]
-    saveCustomMints(updated)
-
-    setNewMintName('')
-    setNewMintUrl('')
-    setShowAddMint(false)
-    setSuccess('Mint added!')
-    setTimeout(() => setSuccess(''), 2000)
-  }
-
-  const handleRemoveMint = (mintUrl) => {
-    if (confirm(`Remove this mint?\n\nThis will NOT delete your tokens, but you won't see them until you add the mint back.`)) {
-      const updated = customMints.filter(m => m.url !== mintUrl)
-      saveCustomMints(updated)
-      setSuccess('Mint removed!')
-      setTimeout(() => setSuccess(''), 2000)
-    }
-  }
-
-  const initWallet = async () => {
-    try {
-      setLoading(true)
-      setError('')
-
-      const mint = new CashuMint(mintUrl)
-      const newWallet = new CashuWallet(mint, { bip39seed: bip39Seed })
-
-      try {
-        const info = await mint.getInfo()
-        setMintInfo(info)
-      } catch (infoError) {
-        console.log('Could not fetch mint info (offline?):', infoError)
-        setMintInfo({ name: 'Mint', nuts: {} })
-      }
-
-      setWallet(newWallet)
-      await validateProofs(newWallet, mintUrl)
-      calculateAllBalances()
-
-    } catch (err) {
-      console.error('Wallet init error:', err)
-      setMintInfo({ name: 'Mint', nuts: {} })
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const validateProofs = async (walletInstance, currentMintUrl) => {
-    try {
-      const proofs = getProofsForMint(currentMintUrl)
-      if (proofs.length === 0) return
-
-      const validProofs = proofs.filter(p => {
-        return p && p.amount && typeof p.amount === 'number' && p.secret && p.C
-      })
-
-      if (validProofs.length < proofs.length) {
-        console.log('Removed', proofs.length - validProofs.length, 'invalid proofs')
-        saveProofsForMint(currentMintUrl, validProofs)
-      }
-    } catch (err) {
-      console.error('Proof validation error:', err)
-    }
-  }
-
-  const calculateAllBalances = () => {
-    const mintBalances = {}
-    let total = 0
-
-    allMints.forEach(mint => {
-      const proofs = getProofsForMint(mint.url)
-      const balance = proofs.reduce((sum, p) => sum + (p.amount || 0), 0)
-      mintBalances[mint.url] = balance
-      total += balance
-    })
-
-    setBalances(mintBalances)
-    setTotalBalance(total)
-  }
-
-  // ✅ MODIFIED: Save proofs with encryption
-  const saveProofsForMint = (mintUrl, proofs) => {
-    try {
-      const validProofs = proofs.filter(p => p && p.amount && typeof p.amount === 'number')
-      const key = `cashu_proofs_${btoa(mintUrl)}`
-      
-      if (masterKey) {
-        // Encrypt proofs with master key
-        const encrypted = encryptProofs(validProofs, masterKey)
-        localStorage.setItem(key, encrypted)
-      } else {
-        // Fallback: unencrypted (for backward compatibility)
-        localStorage.setItem(key, JSON.stringify(validProofs))
-      }
-    } catch (err) {
-      console.error('Error saving proofs:', err)
-    }
-  }
-
-  // ✅ MODIFIED: Load proofs with decryption
-  const getProofsForMint = (mintUrl) => {
-    try {
-      const key = `cashu_proofs_${btoa(mintUrl)}`
-      const saved = localStorage.getItem(key)
-      
-      if (!saved || saved === 'undefined' || saved === 'null') {
-        return []
-      }
-
-      // Try to decrypt if we have a master key
-      if (masterKey) {
-        try {
-          return decryptProofs(saved, masterKey)
-        } catch (decryptErr) {
-          // Fallback: might be unencrypted old data
-          console.log('Decryption failed, trying plain JSON...')
-          const parsed = JSON.parse(saved)
-          return Array.isArray(parsed) ? parsed.filter(p => p && p.amount) : []
-        }
-      } else {
-        // No master key yet - return plain data
-        const parsed = JSON.parse(saved)
-        return Array.isArray(parsed) ? parsed.filter(p => p && p.amount) : []
-      }
-    } catch (err) {
-      console.error('Error loading proofs:', err)
-      return []
-    }
-  }
-
-  const loadTransactions = () => {
-    try {
-      const saved = localStorage.getItem('cashu_transactions')
-      if (saved && saved !== 'undefined' && saved !== 'null') {
-        setTransactions(JSON.parse(saved))
-      }
-    } catch (err) {
-      console.error('Error loading transactions:', err)
-    }
-  }
-
-  const addTransaction = (type, amount, note, mint, status = 'paid') => {
-    const tx = {
-      id: Date.now(),
-      type,
-      amount,
-      note,
-      mint: mint || mintUrl,
-      timestamp: new Date().toISOString(),
-      status  // 'paid' or 'pending'
-    }
-    const updated = [tx, ...transactions]
-    setTransactions(updated)
-    localStorage.setItem('cashu_transactions', JSON.stringify(updated))
-    return tx.id  // Return ID so we can update it later
-  }
-
-  const updateTransactionStatus = (txId, newStatus) => {
-    const updated = transactions.map(tx => 
-      tx.id === txId ? { ...tx, status: newStatus } : tx
-    )
-    setTransactions(updated)
-    localStorage.setItem('cashu_transactions', JSON.stringify(updated))
-  }
-
-  const generateQR = async (data) => {
-    const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=500x500&data=${encodeURIComponent(data)}`
-    return qrUrl
-  }
-
+  // Handle QR scan
   const handleScan = async (scannedData) => {
     setShowScanner(false)
 
@@ -1719,12 +186,8 @@ function App() {
       const dataLower = data.toLowerCase()
 
       if (dataLower.startsWith('cashu')) {
-        setReceiveToken(data)
         setShowReceivePage(true)
-        setReceiveMethod('ecash')
-        setTimeout(() => {
-          handleReceiveEcash()
-        }, 100)
+        // Auto-receive will be handled by ReceivePage
         return
       }
 
@@ -1732,28 +195,20 @@ function App() {
           dataLower.startsWith('lntb') ||
           dataLower.startsWith('lnbcrt') ||
           dataLower.startsWith('ln')) {
-        setLightningInvoice(data)
         setShowSendPage(true)
-        setSendMethod('lightning')
+        // Auto-send will be handled by SendPage
         return
       }
 
       if (dataLower.includes('lightning:')) {
         const invoice = data.split('lightning:')[1]
-        setLightningInvoice(invoice)
         setShowSendPage(true)
-        setSendMethod('lightning')
         return
       }
 
       if (dataLower.includes('cashu:')) {
         const token = data.split('cashu:')[1]
-        setReceiveToken(token)
         setShowReceivePage(true)
-        setReceiveMethod('ecash')
-        setTimeout(() => {
-          handleReceiveEcash()
-        }, 100)
         return
       }
 
@@ -1767,6 +222,7 @@ function App() {
     }
   }
 
+  // Handle mint/receive Lightning
   const handleMint = async () => {
     if (!wallet || !mintAmount) return
 
@@ -1796,7 +252,6 @@ function App() {
 
   const handleCancelMint = () => {
     clearPendingQuote()
-
     setLightningInvoice('')
     setLightningInvoiceQR('')
     setCurrentQuote(null)
@@ -1805,198 +260,34 @@ function App() {
     setSuccess('')
   }
 
-  const handleSendEcash = async () => {
-    if (!wallet || !sendAmount) return
-
-    try {
-      setLoading(true)
-      setError('')
-      const amount = parseInt(sendAmount)
-      const proofs = getProofsForMint(mintUrl)
-      const currentBalance = balances[mintUrl] || 0
-
-      if (proofs.length === 0) {
-        throw new Error('No tokens available. Mint some first!')
-      }
-
-      if (currentBalance < amount) {
-        throw new Error(`Insufficient balance. You have ${currentBalance} sats.`)
-      }
-
-      const result = await wallet.send(amount, proofs)
-
-      if (!result) {
-        throw new Error('wallet.send returned nothing')
-      }
-
-      const { keep, send, returnChange } = result
-
-      const proofsToKeep = keep || returnChange || []
-      const proofsToSend = send || []
-
-      if (!proofsToSend || proofsToSend.length === 0) {
-        throw new Error('Failed to create send proofs')
-      }
-
-      saveProofsForMint(mintUrl, proofsToKeep)
-
-      calculateAllBalances()
-
-      const token = getEncodedToken({
-        token: [{ mint: mintUrl, proofs: proofsToSend }]
-      })
-
-      const qr = await generateQR(token)
-      setGeneratedToken(token)
-      setGeneratedQR(qr)
-
-      const txId = addTransaction('send', amount, 'Ecash token generated', mintUrl, 'pending')
-
-      savePendingToken(token, amount, mintUrl, proofsToSend, txId)
-
-      setSuccess('Token generated! Copy to send.')
-      setSendAmount('')
-
-    } catch (err) {
-      setError(`Send failed: ${err.message}`)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const handleReceiveEcash = async () => {
-    if (!receiveToken) return
-
-    try {
-      setLoading(true)
-      setError('')
-
-      const cleanToken = receiveToken.trim()
-
-      let decoded
-      try {
-        decoded = getDecodedToken(cleanToken)
-      } catch (decodeErr) {
-        throw new Error(`Cannot read token. Make sure you copied the entire token.`)
-      }
-
-      const detectedMintUrl = decoded.token[0]?.mint
-
-      if (!detectedMintUrl) {
-        throw new Error('Token does not contain mint information')
-      }
-
-      const hasMint = allMints.some(m => m.url === detectedMintUrl)
-
-      if (!hasMint) {
-        throw new Error(`Token is from unknown mint: ${detectedMintUrl}\n\nAdd this mint in Settings first.`)
-      }
-
-      const targetMint = new CashuMint(detectedMintUrl)
-      const targetWallet = new CashuWallet(targetMint, { bip39seed: bip39Seed })
-
-      const proofs = await targetWallet.receive(decoded)
-
-      if (!proofs || proofs.length === 0) {
-        throw new Error('Token already claimed or invalid.')
-      }
-
-      const existingProofs = getProofsForMint(detectedMintUrl)
-      const allProofs = [...existingProofs, ...proofs]
-
-      const validProofs = allProofs.filter(p => p && p.amount && typeof p.amount === 'number')
-      saveProofsForMint(detectedMintUrl, validProofs)
-
-      calculateAllBalances()
-
-      const receivedAmount = proofs.reduce((sum, p) => sum + (p.amount || 0), 0)
-      addTransaction('receive', receivedAmount, 'Ecash token received', detectedMintUrl)
-
-      vibrate([200])
-
-      setSuccess(`✅ Received ${receivedAmount} sats!`)
-      setReceiveToken('')
-
-      setTimeout(() => {
-        setShowReceivePage(false)
-        resetReceivePage()
-      }, 2000)
-
-    } catch (err) {
-      if (err.message.includes('already spent') || err.message.includes('already claimed')) {
-        setError('Token already claimed or spent')
-      } else {
-        setError(`${err.message}`)
-      }
-    } finally {
-      setLoading(false)
-    }
-  }
-
   const copyToClipboard = async (text, label) => {
     try {
       await navigator.clipboard.writeText(text)
       setSuccess(`✓ ${label} copied!`)
       setTimeout(() => setSuccess(''), 2000)
     } catch (err) {
-      const textArea = document.createElement('textarea')
-      textArea.value = text
-      textArea.style.position = 'fixed'
-      textArea.style.opacity = '0'
-      document.body.appendChild(textArea)
-      textArea.select()
-      textArea.setSelectionRange(0, 99999)
-
-      try {
-        document.execCommand('copy')
-        setSuccess(`✓ ${label} copied!`)
-        setTimeout(() => setSuccess(''), 2000)
-      } catch (copyErr) {
-        setError('Tap and hold the token to copy')
-        setTimeout(() => setError(''), 3000)
-      }
-
-      document.body.removeChild(textArea)
+      setError('Failed to copy')
+      setTimeout(() => setError(''), 3000)
     }
   }
 
-  const handleResetWallet = (specificMint = null) => {
-    const targetMint = specificMint || mintUrl
-    const targetBalance = balances[targetMint] || 0
-    const mintName = allMints.find(m => m.url === targetMint)?.name || 'this mint'
+  const handleResetMint = () => {
+    const targetBalance = currentMintBalance
+    const mintName = allMints.find(m => m.url === mintUrl)?.name || 'this mint'
 
     if (confirm(`⚠️ Reset ${mintName}?\n\nThis will clear ${targetBalance} sats from this mint.\n\nThis cannot be undone!`)) {
-      const key = `cashu_proofs_${btoa(targetMint)}`
-      localStorage.removeItem(key)
-      calculateAllBalances()
+      resetMint()
       setSuccess(`${mintName} reset!`)
       setTimeout(() => setSuccess(''), 3000)
     }
   }
 
-  const resetSendPage = () => {
-    setGeneratedToken('')
-    setGeneratedQR('')
-    setSendAmount('')
-    setSendMethod(null)
-    setError('')
-    setSuccess('')
-  }
-
-  const resetReceivePage = () => {
-    setReceiveMethod(null)
-    setReceiveToken('')
-    setError('')
-    setSuccess('')
-  }
-
-  const currentMintBalance = balances[mintUrl] || 0
-
+  // Render splash screen
   if (showSplash) {
     return <SplashScreen onComplete={() => setShowSplash(false)} />
   }
 
-  // ✅ NEW: Show seed backup screen for new wallets
+  // Render seed backup screen
   if (showSeedBackup) {
     return (
       <SeedPhraseBackup
@@ -2008,7 +299,7 @@ function App() {
     )
   }
 
-  // ✅ NEW: Show restore wallet screen
+  // Render restore wallet screen
   if (showRestoreWallet) {
     return (
       <RestoreWallet
@@ -2018,6 +309,7 @@ function App() {
     )
   }
 
+  // Render QR scanner
   if (showScanner) {
     return (
       <QRScanner
@@ -2028,11 +320,20 @@ function App() {
     )
   }
 
+  // Render pending tokens page
   if (showPendingTokens) {
     return (
-      <PendingTokensView
+      <PendingTokens
         pendingTokens={pendingTokens}
-        onReclaim={reclaimPendingToken}
+        onReclaim={(pending) => reclaimPendingToken(
+          pending,
+          getProofs,
+          saveProofs,
+          calculateAllBalances,
+          setError,
+          setSuccess,
+          setLoading
+        )}
         onCopy={(token) => copyToClipboard(token, 'Token')}
         onRemove={removePendingToken}
         onClose={() => setShowPendingTokens(false)}
@@ -2040,404 +341,102 @@ function App() {
     )
   }
 
-  if (showMintSettings) {
-    return (
-      <div className="app">
-        <header>
-          <button className="back-btn" onClick={() => setShowMintSettings(false)}>← Back</button>
-          <h1>⚙️ Settings</h1>
-        </header>
-
-        {/* ✅ NEW: Backup & Restore Section */}
-        <div className="card" style={{ borderColor: '#FFD700' }}>
-          <h3 style={{ color: '#FFD700' }}>🔐 Wallet Backup</h3>
-          <p style={{ fontSize: '0.9em', marginBottom: '1em', opacity: 0.8 }}>
-            Protect your wallet with a 12-word recovery phrase
-          </p>
-
-          <button
-            className="primary-btn"
-            onClick={() => {
-              alert("Button clicked! Seed: " + (localStorage.getItem("wallet_seed") || "none"))
-              const currentSeed = localStorage.getItem("wallet_seed") || seedPhrase
-              if (!currentSeed || currentSeed.trim() === "") {
-                console.error("No seed found! Generating new one...")
-                const newSeed = generateWalletSeed()
-                console.log("🔥 NEW SEED TYPE:", typeof newSeed)
-                console.log("🔥 NEW SEED VALUE:", newSeed)
-                console.log("🔥 NEW SEED LENGTH:", newSeed ? newSeed.length : 0)
-                alert("Generated: " + newSeed)
-                localStorage.setItem("wallet_seed", newSeed)
-              } else {
-                setSeedPhrase(currentSeed)
-              }
-              setTimeout(() => setShowSeedBackup(true), 100)
-            }}
-          >
-            📝 View Recovery Phrase
-          </button>
-
-          <button
-            className="secondary-btn"
-            onClick={() => setShowRestoreWallet(true)}
-          >
-            🔄 Restore from Backup
-          </button>
-
-          <div style={{
-            marginTop: '1em',
-            padding: '0.8em',
-            background: 'rgba(255, 215, 0, 0.1)',
-            borderRadius: '8px',
-            fontSize: '0.85em',
-            lineHeight: '1.5'
-          }}>
-            💡 <strong>Tip:</strong> Write down your recovery phrase on paper and store it safely. Never share it with anyone!
-          </div>
-        </div>
-
-        <div className="card">
-          <h3>Select Mint</h3>
-          <p style={{ fontSize: '0.85em', marginBottom: '1em', opacity: 0.7 }}>
-            Current: {allMints.find(m => m.url === mintUrl)?.name || 'Unknown'}
-          </p>
-
-          {allMints.map(mint => (
-            <div key={mint.url} className="mint-item">
-              <div style={{ flex: 1 }}>
-                <div style={{ fontWeight: 'bold' }}>{mint.name}</div>
-                <div style={{ fontSize: '0.8em', opacity: 0.6, wordBreak: 'break-all' }}>{mint.url}</div>
-                <div style={{ fontSize: '0.9em', marginTop: '0.3em', color: '#FF8C00' }}>
-                  {balances[mint.url] || 0} sats
-                </div>
-              </div>
-              <div style={{ display: 'flex', gap: '0.5em', alignItems: 'center' }}>
-                {mintUrl === mint.url ? (
-                  <span style={{ color: '#51cf66', fontSize: '0.9em' }}>✓ Active</span>
-                ) : (
-                  <button
-                    className="secondary-btn"
-                    style={{ padding: '0.4em 0.8em', fontSize: '0.85em', width: 'auto' }}
-                    onClick={() => setMintUrl(mint.url)}
-                  >
-                    Switch
-                  </button>
-                )}
-                {!DEFAULT_MINTS.find(m => m.url === mint.url) && (
-                  <button
-                    className="cancel-btn"
-                    style={{ padding: '0.4em 0.8em', fontSize: '0.85em', width: 'auto' }}
-                    onClick={() => handleRemoveMint(mint.url)}
-                  >
-                    Remove
-                  </button>
-                )}
-              </div>
-            </div>
-          ))}
-
-          <button className="primary-btn" onClick={() => setShowAddMint(true)} style={{ marginTop: '1em' }}>
-            + Add Mint
-          </button>
-        </div>
-
-        {showAddMint && (
-          <div className="card">
-            <h3>Add New Mint</h3>
-            <input
-              type="text"
-              placeholder="Mint name (e.g., My Mint)"
-              value={newMintName}
-              onChange={(e) => setNewMintName(e.target.value)}
-              style={{ marginBottom: '0.5em' }}
-            />
-            <input
-              type="text"
-              placeholder="Mint URL (https://...)"
-              value={newMintUrl}
-              onChange={(e) => setNewMintUrl(e.target.value)}
-            />
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5em', marginTop: '0.5em' }}>
-              <button className="secondary-btn" onClick={() => setShowAddMint(false)}>Cancel</button>
-              <button className="primary-btn" onClick={handleAddMint}>Add</button>
-            </div>
-          </div>
-        )}
-
-        <div className="card" style={{ borderColor: '#ff6b6b' }}>
-          <h3 style={{ color: '#ff6b6b' }}>⚠️ Danger Zone</h3>
-          <p style={{ fontSize: '0.9em', marginBottom: '1em', opacity: 0.8 }}>
-            Reset the current mint if you have corrupted tokens.
-          </p>
-          <button
-            className="cancel-btn"
-            onClick={() => handleResetWallet()}
-            style={{ width: '100%' }}
-          >
-            Reset Current Mint ({currentMintBalance} sats)
-          </button>
-        </div>
-      </div>
-    )
-  }
-
+  // Render history page
   if (showHistoryPage) {
     return (
-      <div className="app">
-        <header>
-          <button className="back-btn" onClick={() => {
-            setShowHistoryPage(false)
-            calculateAllBalances()
-          }}>← Back</button>
-          <h1>📜 History</h1>
-        </header>
-
-        <div className="card balance-card-small">
-          <div style={{ fontSize: '1.5em', fontWeight: 'bold', color: '#FF8C00' }}>{totalBalance} sats</div>
-          <div style={{ fontSize: '0.85em', opacity: 0.6 }}>Total Balance</div>
-        </div>
-
-        {transactions.length === 0 ? (
-          <div className="card">
-            <p style={{ textAlign: 'center', opacity: 0.6 }}>No transactions yet</p>
-          </div>
-        ) : (
-          transactions.map(tx => (
-            <div key={tx.id} className="card transaction-item">
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5em' }}>
-                    <span style={{ fontSize: '1.5em' }}>
-                      {tx.type === 'send' ? '📤' : '📥'}
-                    </span>
-                    <div>
-                      <div style={{ fontWeight: 'bold', color: tx.type === 'send' ? '#ff6b6b' : '#51cf66' }}>
-                        {tx.type === 'send' ? '-' : '+'}{tx.amount} sats
-                      </div>
-                      <div style={{ fontSize: '0.8em', opacity: 0.6 }}>{tx.note}</div>
-                      {tx.status === 'pending' && (
-                        <span style={{
-                          fontSize: '0.75em',
-                          background: 'rgba(255, 165, 0, 0.2)',
-                          color: '#FFA500',
-                          padding: '0.2em 0.5em',
-                          borderRadius: '4px',
-                          marginTop: '0.3em',
-                          display: 'inline-block'
-                        }}>
-                          ⏳ Pending
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                </div>
-                <div style={{ fontSize: '0.75em', opacity: 0.6, textAlign: 'right' }}>
-                  {new Date(tx.timestamp).toLocaleDateString()}<br/>
-                  {new Date(tx.timestamp).toLocaleTimeString()}
-                </div>
-              </div>
-            </div>
-          ))
-        )}
-      </div>
+      <HistoryPage
+        transactions={transactions}
+        totalBalance={totalBalance}
+        onClose={() => {
+          setShowHistoryPage(false)
+          calculateAllBalances()
+        }}
+      />
     )
   }
 
+  // Render settings page
+  if (showMintSettings) {
+    return (
+      <SettingsPage
+        allMints={allMints}
+        mintUrl={mintUrl}
+        balances={balances}
+        currentMintBalance={currentMintBalance}
+        onMintSwitch={setMintUrl}
+        onAddMint={addCustomMint}
+        onRemoveMint={removeCustomMint}
+        onResetMint={handleResetMint}
+        onShowSeedBackup={() => setShowSeedBackup(true)}
+        onShowRestoreWallet={() => setShowRestoreWallet(true)}
+        onClose={() => setShowMintSettings(false)}
+        seedPhrase={seedPhrase}
+        setSeedPhrase={setSeedPhrase}
+      />
+    )
+  }
 
+  // Render send page
   if (showSendPage) {
     return (
-      <div className="app">
-        <header>
-          <button className="back-btn" onClick={() => {
-            setShowSendPage(false)
-            resetSendPage()
-            calculateAllBalances()
-          }}>← Back</button>
-          <h1>📤 Send</h1>
-        </header>
-
-        <div className="card balance-card-small">
-          <div style={{ fontSize: '1.5em', fontWeight: 'bold', color: '#FF8C00' }}>{currentMintBalance} sats</div>
-          <div style={{ fontSize: '0.85em', opacity: 0.6 }}>Available Balance</div>
-        </div>
-
-        {error && <div className="error">{error}</div>}
-        {success && <div className="success">{success}</div>}
-
-        {!sendMethod ? (
-          <div className="card">
-            <h3>Choose Send Method</h3>
-            <p style={{ marginBottom: '1em', opacity: 0.8 }}>How do you want to send?</p>
-
-            <button
-              className="primary-btn"
-              style={{ marginBottom: '0.5em', background: '#4CAF50' }}
-              onClick={() => {
-                setShowScanner(true)
-                setScanMode('send')
-              }}
-            >
-              <span style={{ fontSize: '1.2em', marginRight: '0.5em' }}>⌘</span> Scan to Pay
-            </button>
-
-            <button className="primary-btn" style={{ marginBottom: '0.5em' }} onClick={() => setSendMethod('ecash')}>
-              💰 Send Ecash Token
-            </button>
-            <button className="primary-btn" onClick={() => setSendMethod('lightning')}>
-              ⚡ Send via Lightning
-            </button>
-          </div>
-        ) : sendMethod === 'lightning' ? (
-          <SendViaLightning
-            wallet={wallet}
-            mintUrl={mintUrl}
-            currentMintBalance={currentMintBalance}
-            getProofsForMint={getProofsForMint}
-            calculateAllBalances={calculateAllBalances}
-            addTransaction={addTransaction}
-            resetSendPage={() => {
-              resetSendPage()
-            }}
-            setError={setError}
-            setSuccess={setSuccess}
-            setLoading={setLoading}
-            loading={loading}
-            lightningInvoice={lightningInvoice}
-            setLightningInvoice={setLightningInvoice}
-            decodedInvoice={decodedInvoice}
-            setDecodedInvoice={setDecodedInvoice}
-          />
-        ) : (
-          <div className="card">
-            <h3>💰 Send Ecash</h3>
-            <p style={{ marginBottom: '1em' }}>
-              Generate a token to send
-            </p>
-            <input
-              type="number"
-              placeholder="Amount in sats"
-              value={sendAmount}
-              onChange={(e) => setSendAmount(e.target.value)}
-            />
-            <button className="primary-btn" onClick={handleSendEcash} disabled={loading || !sendAmount || currentMintBalance === 0}>
-              {loading ? 'Generating...' : 'Generate Token'}
-            </button>
-
-            {generatedToken && (
-              <div style={{ marginTop: '1em' }}>
-                {generatedQR && (
-                  <div style={{ textAlign: 'center', marginBottom: '1em' }}>
-                    <img src={generatedQR} alt="QR Code" style={{ maxWidth: '280px', width: '100%', borderRadius: '8px' }} />
-                  </div>
-                )}
-                <div className="token-box">
-                  <textarea
-                    readOnly
-                    value={generatedToken}
-                    rows={4}
-                    style={{ fontSize: '0.7em', marginBottom: '0.5em' }}
-                  />
-                </div>
-                <button className="copy-btn" onClick={() => copyToClipboard(generatedToken, 'Token')}>
-                  📋 Copy Token
-                </button>
-                <p style={{ fontSize: '0.75em', opacity: 0.5, marginTop: '0.5em', textAlign: 'center' }}>
-                  💡 Token will auto-clear once recipient claims it
-                </p>
-              </div>
-            )}
-
-            <button className="back-btn" style={{ marginTop: '1em', position: 'relative', left: 0, transform: 'none' }} onClick={() => {
-              resetSendPage()
-            }}>
-              ← Change Method
-            </button>
-          </div>
-        )}
-      </div>
+      <SendPage
+        wallet={wallet}
+        mintUrl={mintUrl}
+        currentMintBalance={currentMintBalance}
+        getProofs={getProofs}
+        saveProofs={saveProofs}
+        calculateAllBalances={calculateAllBalances}
+        addTransaction={addTransaction}
+        addPendingToken={addPendingToken}
+        error={error}
+        success={success}
+        setError={setError}
+        setSuccess={setSuccess}
+        loading={loading}
+        setLoading={setLoading}
+        onClose={() => {
+          setShowSendPage(false)
+          calculateAllBalances()
+        }}
+        onScanRequest={(mode) => {
+          setScanMode(mode)
+          setShowScanner(true)
+        }}
+      />
     )
   }
 
+  // Render receive page
   if (showReceivePage) {
     return (
-      <div className="app">
-        <header>
-          <button className="back-btn" onClick={() => {
-            setShowReceivePage(false)
-            resetReceivePage()
-            calculateAllBalances()
-          }}>← Back</button>
-          <h1>📥 Receive</h1>
-        </header>
-
-        <div className="card balance-card-small">
-          <div style={{ fontSize: '1.5em', fontWeight: 'bold', color: '#FF8C00' }}>{totalBalance} sats</div>
-          <div style={{ fontSize: '0.85em', opacity: 0.6 }}>Current Balance</div>
-        </div>
-
-        {error && <div className="error">{error}</div>}
-        {success && <div className="success">{success}</div>}
-
-        {!receiveMethod ? (
-          <div className="card">
-            <h3>Choose Receive Method</h3>
-            <p style={{ marginBottom: '1em', opacity: 0.8 }}>How do you want to receive?</p>
-
-            <button
-              className="primary-btn"
-              style={{ marginBottom: '0.5em', background: '#4CAF50' }}
-              onClick={() => {
-                setShowScanner(true)
-                setScanMode('receive')
-              }}
-            >
-              <span style={{ fontSize: '1.2em', marginRight: '0.5em' }}>⌘</span> Scan Token
-            </button>
-
-            <button className="primary-btn" style={{ marginBottom: '0.5em' }} onClick={() => setReceiveMethod('ecash')}>
-              💰 Paste Ecash Token
-            </button>
-            <button className="secondary-btn" onClick={() => setReceiveMethod('lightning')}>
-              ⚡ Receive via Lightning
-            </button>
-          </div>
-        ) : receiveMethod === 'ecash' ? (
-          <div className="card">
-            <h3>💰 Receive Ecash</h3>
-            <p style={{ marginBottom: '1em' }}>
-              Paste a Cashu token
-            </p>
-            <div className="token-box">
-              <textarea
-                placeholder="Paste token here..."
-                value={receiveToken}
-                onChange={(e) => setReceiveToken(e.target.value)}
-                rows={6}
-              />
-            </div>
-            <button className="primary-btn" onClick={handleReceiveEcash} disabled={loading || !receiveToken}>
-              {loading ? 'Receiving...' : 'Receive Token'}
-            </button>
-
-            <button className="back-btn" style={{ marginTop: '1em', position: 'relative', left: 0, transform: 'none' }} onClick={resetReceivePage}>
-              ← Change Method
-            </button>
-          </div>
-        ) : (
-          <div className="card">
-            <h3>⚡ Receive Lightning</h3>
-            <p style={{ fontSize: '0.9em', marginBottom: '1em', opacity: 0.7 }}>
-              Use "Get Tokens" on the main page.
-            </p>
-            <button className="back-btn" style={{ position: 'relative', left: 0, transform: 'none' }} onClick={resetReceivePage}>
-              ← Change Method
-            </button>
-          </div>
-        )}
-      </div>
+      <ReceivePage
+        wallet={wallet}
+        bip39Seed={bip39Seed}
+        allMints={allMints}
+        totalBalance={totalBalance}
+        getProofs={getProofs}
+        saveProofs={saveProofs}
+        calculateAllBalances={calculateAllBalances}
+        addTransaction={addTransaction}
+        error={error}
+        success={success}
+        setError={setError}
+        setSuccess={setSuccess}
+        loading={loading}
+        setLoading={setLoading}
+        onClose={() => {
+          setShowReceivePage(false)
+          calculateAllBalances()
+        }}
+        onScanRequest={(mode) => {
+          setScanMode(mode)
+          setShowScanner(true)
+        }}
+      />
     )
   }
 
+  // Main home screen
   return (
     <div className="app">
       <InstallButton />
