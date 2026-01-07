@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { DEFAULT_MINTS } from '../utils/cashu.js'
 import { generateWalletSeed } from '../utils/cashu.js'
+import NostrSettings from './NostrSettings.jsx'
 
 export default function SettingsPage({
   allMints,
@@ -20,6 +21,7 @@ export default function SettingsPage({
   const [showAddMint, setShowAddMint] = useState(false)
   const [newMintName, setNewMintName] = useState('')
   const [newMintUrl, setNewMintUrl] = useState('')
+  const [showNostrSettings, setShowNostrSettings] = useState(false)
 
   const handleAddMint = () => {
     const success = onAddMint(newMintName, newMintUrl)
@@ -28,6 +30,15 @@ export default function SettingsPage({
       setNewMintUrl('')
       setShowAddMint(false)
     }
+  }
+
+  // Render Nostr settings
+  if (showNostrSettings) {
+    return (
+      <NostrSettings
+        onClose={() => setShowNostrSettings(false)}
+      />
+    )
   }
 
   return (
@@ -78,6 +89,31 @@ export default function SettingsPage({
         }}>
           💡 <strong>Tip:</strong> Write down your recovery phrase on paper and store it safely. Never share it with anyone!
         </div>
+      </div>
+
+      {/* Nostr Integration Section */}
+      <div className="card" style={{ borderColor: '#8B5CF6' }}>
+        <h3 style={{ color: '#8B5CF6' }}>🟣 Advanced Features</h3>
+        
+        <button
+          className="settings-btn"
+          onClick={() => setShowNostrSettings(true)}
+          style={{
+            width: '100%',
+            background: 'linear-gradient(135deg, #8B5CF6 0%, #7C3AED 100%)',
+            borderColor: '#8B5CF6',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '1em',
+            padding: '1em'
+          }}
+        >
+          <span style={{ fontSize: '1.5em' }}>🟣</span>
+          <div style={{ textAlign: 'left', flex: 1 }}>
+            <div style={{ fontWeight: 'bold' }}>Nostr Integration</div>
+            <div style={{ fontSize: '0.75em', opacity: 0.8 }}>Send/receive ecash via Nostr DMs</div>
+          </div>
+        </button>
       </div>
 
       {/* Mint Selection */}
@@ -167,3 +203,4 @@ export default function SettingsPage({
     </div>
   )
 }
+

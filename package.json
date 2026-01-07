@@ -12,12 +12,14 @@
   },
   "dependencies": {
     "@cashu/cashu-ts": "^1.0.0",
+    "@noble/hashes": "^2.0.1",
     "@scure/bip39": "^2.0.1",
     "@zxing/browser": "^0.1.5",
     "bip39": "^3.1.0",
     "crypto-js": "^4.2.0",
     "html5-qrcode": "^2.3.8",
     "jsqr": "^1.4.0",
+    "nostr-tools": "^2.19.4",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },

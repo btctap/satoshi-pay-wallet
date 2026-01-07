@@ -406,18 +406,21 @@ function App() {
     )
   }
 
-  // Render receive page
-  if (showReceivePage) {
+  // Render send page
+  if (showSendPage) {
     return (
-      <ReceivePage
+      <SendPage
         wallet={wallet}
-        bip39Seed={bip39Seed}
-        allMints={allMints}
-        totalBalance={totalBalance}
+        mintUrl={mintUrl}
+        currentMintBalance={currentMintBalance}
         getProofs={getProofs}
         saveProofs={saveProofs}
         calculateAllBalances={calculateAllBalances}
         addTransaction={addTransaction}
+        addPendingToken={addPendingToken}
+        allMints={allMints}
+        balances={balances}
+        onMintSwitch={setMintUrl}
         error={error}
         success={success}
         setError={setError}
@@ -425,7 +428,7 @@ function App() {
         loading={loading}
         setLoading={setLoading}
         onClose={() => {
-          setShowReceivePage(false)
+          setShowSendPage(false)
           calculateAllBalances()
         }}
         onScanRequest={(mode) => {

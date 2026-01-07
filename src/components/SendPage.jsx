@@ -1,6 +1,280 @@
 import { useState, useEffect } from 'react'
 import { getEncodedToken } from '@cashu/cashu-ts'
 import { generateQR, vibrate } from '../utils/cashu.js'
+import { 
+  sendNostrToken, 
+  isValidNpub, 
+  formatPubkey,
+  getNostrProfile 
+} from '../utils/nostr.js'
+
+// Lightning Address utilities
+function isLightningAddress(str) {
+  if (!str || typeof str !== 'string') return false
+  const parts = str.trim().split('@')
+  return parts.length === 2 && parts[0].length > 0 && parts[1].includes('.')
+}
+
+async function getInvoiceFromLightningAddress(address, amountSats) {
+  const [username, domain] = address.split('@')
+  const url = `https://${domain}/.well-known/lnurlp/${username}`
+
+  const response = await fetch(url)
+  if (!response.ok) {
+    throw new Error(`Failed to fetch Lightning Address: ${response.status}`)
+  }
+
+  const data = await response.json()
+
+  if (!data.callback) {
+    throw new Error('Invalid Lightning Address response')
+  }
+
+  const minSendable = Math.floor(data.minSendable / 1000)
+  const maxSendable = Math.floor(data.maxSendable / 1000)
+
+  if (amountSats < minSendable) {
+    throw new Error(`Amount too low. Minimum: ${minSendable} sats`)
+  }
+
+  if (amountSats > maxSendable) {
+    throw new Error(`Amount too high. Maximum: ${maxSendable} sats`)
+  }
+
+  const amountMsats = amountSats * 1000
+  const callbackUrl = new URL(data.callback)
+  callbackUrl.searchParams.set('amount', amountMsats.toString())
+
+  const invoiceResponse = await fetch(callbackUrl.toString())
+  if (!invoiceResponse.ok) {
+    throw new Error(`Failed to get invoice: ${invoiceResponse.status}`)
+  }
+
+  const invoiceData = await invoiceResponse.json()
+
+  if (invoiceData.status === 'ERROR') {
+    throw new Error(invoiceData.reason || 'Lightning Address error')
+  }
+
+  if (!invoiceData.pr) {
+    throw new Error('No invoice returned')
+  }
+
+  return invoiceData.pr
+}
+
+// Nostr Send Component
+function SendViaNostr({
+  wallet,
+  mintUrl,
+  currentMintBalance,
+  getProofs,
+  saveProofs,
+  calculateAllBalances,
+  addTransaction,
+  addPendingToken,
+  resetSendPage,
+  setError,
+  setSuccess,
+  setLoading,
+  loading
+}) {
+  const [sendAmount, setSendAmount] = useState('')
+  const [recipientNpub, setRecipientNpub] = useState('')
+  const [message, setMessage] = useState('')
+  const [sending, setSending] = useState(false)
+  const [profileInfo, setProfileInfo] = useState(null)
+
+  const nsec = localStorage.getItem('nostr_nsec')
+  const isConnected = !!nsec
+
+  useEffect(() => {
+    if (recipientNpub && isValidNpub(recipientNpub)) {
+      getNostrProfile(recipientNpub)
+        .then(profile => setProfileInfo(profile))
+        .catch(() => setProfileInfo(null))
+    } else {
+      setProfileInfo(null)
+    }
+  }, [recipientNpub])
+
+  const handleGenerateAndSend = async () => {
+    if (!sendAmount || parseInt(sendAmount) <= 0) {
+      setError('Please enter an amount')
+      return
+    }
+
+    if (!recipientNpub.trim()) {
+      setError('Please enter recipient npub')
+      return
+    }
+
+    if (!isValidNpub(recipientNpub)) {
+      setError('Invalid npub format')
+      return
+    }
+
+    if (!isConnected) {
+      setError('Please connect your Nostr identity in Settings first')
+      return
+    }
+
+    try {
+      setSending(true)
+      setError('')
+
+      const amount = parseInt(sendAmount)
+      const proofs = getProofs(mintUrl)
+
+      if (proofs.length === 0) {
+        throw new Error('No tokens available. Mint some first!')
+      }
+
+      if (currentMintBalance < amount) {
+        throw new Error(`Insufficient balance. You have ${currentMintBalance} sats.`)
+      }
+
+      const result = await wallet.send(amount, proofs)
+
+      if (!result) {
+        throw new Error('Failed to generate token')
+      }
+
+      const { keep, send, returnChange } = result
+      const proofsToKeep = keep || returnChange || []
+      const proofsToSend = send || []
+
+      if (!proofsToSend || proofsToSend.length === 0) {
+        throw new Error('Failed to create send proofs')
+      }
+
+      saveProofs(mintUrl, proofsToKeep)
+      calculateAllBalances()
+
+      const token = getEncodedToken({
+        token: [{ mint: mintUrl, proofs: proofsToSend }]
+      })
+
+      await sendNostrToken(nsec, recipientNpub, token, message)
+
+      addTransaction('send', amount, `Sent to ${formatPubkey(recipientNpub)} via Nostr`, mintUrl)
+
+      setSuccess('✅ Token sent via Nostr DM!')
+      vibrate([100, 50, 100])
+
+      setTimeout(() => {
+        resetSendPage()
+      }, 2000)
+
+    } catch (err) {
+      setError(`Failed: ${err.message}`)
+    } finally {
+      setSending(false)
+    }
+  }
+
+  if (!isConnected) {
+    return (
+      <div className="card">
+        <h3>🟣 Send via Nostr</h3>
+        <div style={{
+          padding: '1.5em',
+          background: 'rgba(255, 140, 0, 0.1)',
+          borderRadius: '8px',
+          textAlign: 'center'
+        }}>
+          <div style={{ fontSize: '2em', marginBottom: '0.5em' }}>🔌</div>
+          <p>Connect your Nostr identity first!</p>
+          <p style={{ fontSize: '0.85em', opacity: 0.7, marginTop: '0.5em' }}>
+            Go to Settings → Nostr Integration
+          </p>
+        </div>
+        <button 
+          className="back-btn" 
+          style={{ marginTop: '1em', position: 'relative', left: 0, transform: 'none' }}
+          onClick={resetSendPage}
+        >
+          ← Change Method
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <div className="card">
+      <h3>🟣 Send via Nostr DM</h3>
+      <p style={{ marginBottom: '1em', fontSize: '0.9em' }}>
+        Send ecash tokens via encrypted Nostr DM
+      </p>
+
+      <div style={{ marginBottom: '1em' }}>
+        <label style={{ display: 'block', marginBottom: '0.5em', fontSize: '0.9em' }}>
+          Amount (sats):
+        </label>
+        <input
+          type="number"
+          placeholder="Amount in sats"
+          value={sendAmount}
+          onChange={(e) => setSendAmount(e.target.value)}
+        />
+      </div>
+
+      <div style={{ marginBottom: '1em' }}>
+        <label style={{ display: 'block', marginBottom: '0.5em', fontSize: '0.9em' }}>
+          Recipient Nostr Public Key (npub):
+        </label>
+        <input
+          type="text"
+          placeholder="npub1..."
+          value={recipientNpub}
+          onChange={(e) => setRecipientNpub(e.target.value)}
+          style={{ fontFamily: 'monospace', fontSize: '0.85em' }}
+        />
+        {profileInfo && (
+          <div style={{
+            marginTop: '0.5em',
+            padding: '0.6em',
+            background: 'rgba(81, 207, 102, 0.1)',
+            borderRadius: '6px',
+            fontSize: '0.85em'
+          }}>
+            ✓ {profileInfo.displayName || profileInfo.name || 'Profile found'}
+          </div>
+        )}
+      </div>
+
+      <div style={{ marginBottom: '1em' }}>
+        <label style={{ display: 'block', marginBottom: '0.5em', fontSize: '0.9em' }}>
+          Message (optional):
+        </label>
+        <textarea
+          placeholder="Add a note..."
+          value={message}
+          onChange={(e) => setMessage(e.target.value)}
+          rows={3}
+          style={{ fontSize: '0.9em' }}
+        />
+      </div>
+
+      <button
+        className="primary-btn"
+        onClick={handleGenerateAndSend}
+        disabled={sending || !sendAmount || !recipientNpub.trim() || currentMintBalance === 0}
+        style={{ marginBottom: '0.5em' }}
+      >
+        {sending ? 'Sending...' : '📤 Generate & Send via Nostr'}
+      </button>
+
+      <button 
+        className="back-btn" 
+        style={{ marginTop: '0.5em', position: 'relative', left: 0, transform: 'none' }}
+        onClick={resetSendPage}
+      >
+        ← Change Method
+      </button>
+    </div>
+  )
+}
 
 // Lightning Send Component
 function SendViaLightning({
@@ -22,10 +296,12 @@ function SendViaLightning({
   setDecodedInvoice
 }) {
   const [sendingPayment, setSendingPayment] = useState(false)
+  const [lnAddressAmount, setLnAddressAmount] = useState('')
+  const isLnAddress = isLightningAddress(lightningInvoice)
 
   const handleDecodeInvoice = async () => {
     if (!lightningInvoice.trim()) {
-      setError('Please paste a Lightning invoice')
+      setError('Please paste a Lightning invoice or enter a Lightning Address')
       return
     }
 
@@ -33,24 +309,46 @@ function SendViaLightning({
       setLoading(true)
       setError('')
 
-      const invoice = lightningInvoice.trim().toLowerCase()
+      let invoiceToPay = lightningInvoice.trim()
+
+      if (isLnAddress) {
+        if (!lnAddressAmount || parseInt(lnAddressAmount) <= 0) {
+          setError('Please enter an amount for Lightning Address')
+          setLoading(false)
+          return
+        }
+
+        setSuccess('🔍 Resolving Lightning Address...')
+
+        invoiceToPay = await getInvoiceFromLightningAddress(
+          lightningInvoice.trim(),
+          parseInt(lnAddressAmount)
+        )
+
+        setSuccess('✅ Lightning Address resolved!')
+        await new Promise(resolve => setTimeout(resolve, 500))
+      }
+
+      const invoice = invoiceToPay.toLowerCase()
       if (!invoice.startsWith('ln')) {
         throw new Error('Invalid Lightning invoice format')
       }
 
-      const meltQuote = await wallet.createMeltQuote(lightningInvoice.trim())
+      const meltQuote = await wallet.createMeltQuote(invoiceToPay)
 
       setDecodedInvoice({
         amount: meltQuote.amount,
         fee: meltQuote.fee_reserve,
         total: meltQuote.amount + meltQuote.fee_reserve,
-        quote: meltQuote.quote
+        quote: meltQuote.quote,
+        isLnAddress: isLnAddress,
+        lnAddress: isLnAddress ? lightningInvoice.trim() : null
       })
 
       setSuccess('Invoice decoded! Review and confirm.')
 
     } catch (err) {
-      setError(`Failed to decode invoice: ${err.message}`)
+      setError(`Failed: ${err.message}`)
       setDecodedInvoice(null)
     } finally {
       setLoading(false)
@@ -113,7 +411,11 @@ function SendViaLightning({
       saveProofs(mintUrl, allRemainingProofs)
       calculateAllBalances()
 
-      addTransaction('send', decodedInvoice.amount, 'Paid Lightning invoice', mintUrl)
+      const description = decodedInvoice.isLnAddress
+        ? `Sent to ${decodedInvoice.lnAddress}`
+        : 'Paid Lightning invoice'
+
+      addTransaction('send', decodedInvoice.amount, description, mintUrl)
 
       vibrate([100, 50, 100])
 
@@ -123,6 +425,7 @@ function SendViaLightning({
         resetSendPage()
         setDecodedInvoice(null)
         setLightningInvoice('')
+        setLnAddressAmount('')
       }, 2000)
 
     } catch (err) {
@@ -144,11 +447,12 @@ function SendViaLightning({
     }
   }
 
-  useEffect(() => {
-    if (lightningInvoice && !decodedInvoice) {
-      handleDecodeInvoice()
+  const handleSendMax = () => {
+    const maxSendable = currentMintBalance - 2
+    if (maxSendable > 0) {
+      setLnAddressAmount(maxSendable.toString())
     }
-  }, [lightningInvoice])
+  }
 
   return (
     <div className="card">
@@ -157,27 +461,88 @@ function SendViaLightning({
       {!decodedInvoice ? (
         <>
           <p style={{ marginBottom: '1em' }}>
-            Paste a Lightning invoice to pay
+            Paste a Lightning invoice or enter a Lightning Address
           </p>
           <div className="token-box">
             <textarea
-              placeholder="Paste Lightning invoice here (lnbc...)"
+              placeholder="Lightning invoice (lnbc...) or user@domain.com"
               value={lightningInvoice}
               onChange={(e) => setLightningInvoice(e.target.value)}
               rows={4}
               style={{ fontSize: '0.75em' }}
             />
           </div>
+
+          {isLnAddress && (
+            <>
+              <div style={{
+                marginTop: '0.5em',
+                marginBottom: '1em',
+                padding: '0.8em',
+                background: 'rgba(81, 207, 102, 0.1)',
+                borderRadius: '8px',
+                fontSize: '0.85em'
+              }}>
+                ⚡ Lightning Address detected! Enter amount below.
+              </div>
+              <div style={{ position: 'relative', marginBottom: '1em' }}>
+                <input
+                  type="number"
+                  placeholder="Amount in sats"
+                  value={lnAddressAmount}
+                  onChange={(e) => setLnAddressAmount(e.target.value)}
+                  style={{ 
+                    marginBottom: 0,
+                    paddingRight: '70px'
+                  }}
+                />
+                <button
+                  onClick={handleSendMax}
+                  disabled={currentMintBalance === 0}
+                  style={{
+                    position: 'absolute',
+                    right: '10px',
+                    top: '50%',
+                    transform: 'translateY(-50%)',
+                    background: 'rgba(255, 140, 0, 0.2)',
+                    color: '#FF8C00',
+                    border: '1px solid rgba(255, 140, 0, 0.3)',
+                    padding: '0.3em 0.8em',
+                    borderRadius: '6px',
+                    fontSize: '0.85em',
+                    cursor: 'pointer',
+                    fontWeight: 'bold',
+                    opacity: currentMintBalance === 0 ? 0.5 : 1
+                  }}
+                >
+                  MAX
+                </button>
+              </div>
+            </>
+          )}
+
           <button
             className="primary-btn"
             onClick={handleDecodeInvoice}
-            disabled={loading || !lightningInvoice.trim()}
+            disabled={loading || !lightningInvoice.trim() || (isLnAddress && !lnAddressAmount)}
           >
-            {loading ? 'Decoding...' : 'Decode Invoice'}
+            {loading ? 'Processing...' : isLnAddress ? 'Get Invoice' : 'Decode Invoice'}
           </button>
         </>
       ) : (
         <>
+          {decodedInvoice.isLnAddress && (
+            <div style={{
+              marginBottom: '1em',
+              padding: '0.8em',
+              background: 'rgba(81, 207, 102, 0.1)',
+              borderRadius: '8px',
+              fontSize: '0.85em'
+            }}>
+              📬 Paying to: <strong>{decodedInvoice.lnAddress}</strong>
+            </div>
+          )}
+
           <div style={{
             background: 'rgba(81, 207, 102, 0.1)',
             padding: '1em',
@@ -189,13 +554,24 @@ function SendViaLightning({
               <span style={{ float: 'right', fontWeight: 'bold' }}>{decodedInvoice.amount} sats</span>
             </div>
             <div style={{ marginBottom: '0.5em' }}>
-              <span style={{ opacity: 0.7 }}>Network Fee:</span>
+              <span style={{ opacity: 0.7 }}>Network Fee (est):</span>
               <span style={{ float: 'right' }}>{decodedInvoice.fee} sats</span>
             </div>
             <div style={{ borderTop: '1px solid rgba(255,255,255,0.1)', paddingTop: '0.5em', marginTop: '0.5em' }}>
               <span style={{ opacity: 0.7 }}>Total:</span>
               <span style={{ float: 'right', fontWeight: 'bold', color: '#FF8C00' }}>{decodedInvoice.total} sats</span>
             </div>
+          </div>
+
+          <div style={{
+            marginBottom: '1em',
+            padding: '0.6em',
+            background: 'rgba(33, 150, 243, 0.1)',
+            borderRadius: '8px',
+            fontSize: '0.75em',
+            opacity: 0.8
+          }}>
+            💡 Actual fee may be lower. Any difference will be returned as change.
           </div>
 
           <button
@@ -212,6 +588,7 @@ function SendViaLightning({
             onClick={() => {
               setDecodedInvoice(null)
               setLightningInvoice('')
+              setLnAddressAmount('')
             }}
             disabled={sendingPayment}
           >
@@ -249,7 +626,10 @@ export default function SendPage({
   loading,
   setLoading,
   onClose,
-  onScanRequest
+  onScanRequest,
+  allMints,
+  balances,
+  onMintSwitch
 }) {
   const [sendMethod, setSendMethod] = useState(null)
   const [sendAmount, setSendAmount] = useState('')
@@ -257,6 +637,7 @@ export default function SendPage({
   const [generatedQR, setGeneratedQR] = useState('')
   const [lightningInvoice, setLightningInvoice] = useState('')
   const [decodedInvoice, setDecodedInvoice] = useState(null)
+  const [showMintSelector, setShowMintSelector] = useState(false)
 
   const resetSendPage = () => {
     setGeneratedToken('')
@@ -336,6 +717,21 @@ export default function SendPage({
     }
   }
 
+  const handleSendMaxEcash = () => {
+    if (currentMintBalance > 0) {
+      setSendAmount(currentMintBalance.toString())
+    }
+  }
+
+  const handleMintSwitch = (newMintUrl) => {
+    onMintSwitch(newMintUrl)
+    setShowMintSelector(false)
+    setSuccess('✓ Mint switched!')
+    setTimeout(() => setSuccess(''), 2000)
+  }
+
+  const currentMint = allMints?.find(m => m.url === mintUrl)
+
   return (
     <div className="app">
       <header>
@@ -346,6 +742,97 @@ export default function SendPage({
         <h1>📤 Send</h1>
       </header>
 
+      {/* Mint Selector Card */}
+      {allMints && allMints.length > 0 && (
+        <div className="card" style={{ 
+          padding: '0.8em',
+          background: 'rgba(255, 140, 0, 0.05)',
+          borderColor: 'rgba(255, 140, 0, 0.3)'
+        }}>
+          <div style={{ 
+            display: 'flex', 
+            justifyContent: 'space-between', 
+            alignItems: 'center',
+            marginBottom: showMintSelector ? '0.8em' : 0
+          }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: '0.75em', opacity: 0.6, marginBottom: '0.2em' }}>
+                Sending from:
+              </div>
+              <div style={{ fontWeight: 'bold', fontSize: '0.9em' }}>
+                {currentMint?.name || 'Unknown Mint'}
+              </div>
+            </div>
+            {allMints.length > 1 && (
+              <button
+                onClick={() => setShowMintSelector(!showMintSelector)}
+                style={{
+                  background: 'rgba(255, 140, 0, 0.2)',
+                  color: '#FF8C00',
+                  border: '1px solid rgba(255, 140, 0, 0.3)',
+                  padding: '0.5em 1em',
+                  borderRadius: '6px',
+                  fontSize: '0.85em',
+                  cursor: 'pointer',
+                  fontWeight: 'bold'
+                }}
+              >
+                {showMintSelector ? '✕ Close' : '⇄ Switch'}
+              </button>
+            )}
+          </div>
+
+          {showMintSelector && allMints.length > 1 && (
+            <div style={{ 
+              borderTop: '1px solid rgba(255, 140, 0, 0.2)',
+              paddingTop: '0.8em'
+            }}>
+              <div style={{ fontSize: '0.85em', marginBottom: '0.5em', opacity: 0.7 }}>
+                Select mint to send from:
+              </div>
+              {allMints.map(mint => (
+                <div 
+                  key={mint.url}
+                  onClick={() => handleMintSwitch(mint.url)}
+                  style={{
+                    padding: '0.6em',
+                    marginBottom: '0.4em',
+                    background: mint.url === mintUrl 
+                      ? 'rgba(81, 207, 102, 0.1)' 
+                      : 'rgba(255, 255, 255, 0.05)',
+                    borderRadius: '6px',
+                    cursor: 'pointer',
+                    border: mint.url === mintUrl 
+                      ? '1px solid rgba(81, 207, 102, 0.3)' 
+                      : '1px solid rgba(255, 255, 255, 0.1)',
+                    transition: 'all 0.2s'
+                  }}
+                >
+                  <div style={{ 
+                    display: 'flex', 
+                    justifyContent: 'space-between',
+                    alignItems: 'center'
+                  }}>
+                    <div>
+                      <div style={{ fontWeight: 'bold', fontSize: '0.85em' }}>
+                        {mint.name}
+                        {mint.url === mintUrl && (
+                          <span style={{ color: '#51cf66', marginLeft: '0.5em' }}>✓</span>
+                        )}
+                      </div>
+                      <div style={{ fontSize: '0.7em', opacity: 0.5, marginTop: '0.2em' }}>
+                        {balances?.[mint.url] || 0} sats
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Balance Card */}
       <div className="card balance-card-small">
         <div style={{ fontSize: '1.5em', fontWeight: 'bold', color: '#FF8C00' }}>{currentMintBalance} sats</div>
         <div style={{ fontSize: '0.85em', opacity: 0.6 }}>Available Balance</div>
@@ -370,8 +857,20 @@ export default function SendPage({
           <button className="primary-btn" style={{ marginBottom: '0.5em' }} onClick={() => setSendMethod('ecash')}>
             💰 Send Ecash Token
           </button>
-          <button className="primary-btn" onClick={() => setSendMethod('lightning')}>
+          
+          <button className="primary-btn" style={{ marginBottom: '0.5em' }} onClick={() => setSendMethod('lightning')}>
             ⚡ Send via Lightning
+          </button>
+          
+          <button 
+            className="primary-btn" 
+            onClick={() => setSendMethod('nostr')}
+            style={{
+              background: 'linear-gradient(135deg, #8B5CF6 0%, #7C3AED 100%)',
+              borderColor: '#8B5CF6'
+            }}
+          >
+            🟣 Send via Nostr
           </button>
         </div>
       ) : sendMethod === 'lightning' ? (
@@ -393,18 +892,61 @@ export default function SendPage({
           decodedInvoice={decodedInvoice}
           setDecodedInvoice={setDecodedInvoice}
         />
+      ) : sendMethod === 'nostr' ? (
+        <SendViaNostr
+          wallet={wallet}
+          mintUrl={mintUrl}
+          currentMintBalance={currentMintBalance}
+          getProofs={getProofs}
+          saveProofs={saveProofs}
+          calculateAllBalances={calculateAllBalances}
+          addTransaction={addTransaction}
+          addPendingToken={addPendingToken}
+          resetSendPage={resetSendPage}
+          setError={setError}
+          setSuccess={setSuccess}
+          setLoading={setLoading}
+          loading={loading}
+        />
       ) : (
         <div className="card">
           <h3>💰 Send Ecash</h3>
           <p style={{ marginBottom: '1em' }}>
             Generate a token to send
           </p>
-          <input
-            type="number"
-            placeholder="Amount in sats"
-            value={sendAmount}
-            onChange={(e) => setSendAmount(e.target.value)}
-          />
+          <div style={{ position: 'relative', marginBottom: '1em' }}>
+            <input
+              type="number"
+              placeholder="Amount in sats"
+              value={sendAmount}
+              onChange={(e) => setSendAmount(e.target.value)}
+              style={{ 
+                marginBottom: 0,
+                paddingRight: '70px'
+              }}
+            />
+            <button
+              onClick={handleSendMaxEcash}
+              disabled={currentMintBalance === 0}
+              style={{
+                position: 'absolute',
+                right: '10px',
+                top: '50%',
+                transform: 'translateY(-50%)',
+                background: 'rgba(255, 140, 0, 0.2)',
+                color: '#FF8C00',
+                border: '1px solid rgba(255, 140, 0, 0.3)',
+                padding: '0.3em 0.8em',
+                borderRadius: '6px',
+                fontSize: '0.85em',
+                cursor: 'pointer',
+                fontWeight: 'bold',
+                opacity: currentMintBalance === 0 ? 0.5 : 1
+              }}
+            >
+              MAX
+            </button>
+          </div>
           <button className="primary-btn" onClick={handleSendEcash} disabled={loading || !sendAmount || currentMintBalance === 0}>
             {loading ? 'Generating...' : 'Generate Token'}
           </button>
@@ -441,3 +983,4 @@ export default function SendPage({
     </div>
   )
 }
+
