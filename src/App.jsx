@@ -367,7 +367,14 @@ function App() {
         onAddMint={addCustomMint}
         onRemoveMint={removeCustomMint}
         onResetMint={handleResetMint}
-        onShowSeedBackup={() => setShowSeedBackup(true)}
+        onShowSeedBackup={() => {
+          // Ensure seed phrase is loaded from localStorage before showing backup
+          const currentSeed = localStorage.getItem('wallet_seed')
+          if (currentSeed && currentSeed !== seedPhrase) {
+            setSeedPhrase(currentSeed)
+          }
+          setShowSeedBackup(true)
+        }}
         onShowRestoreWallet={() => setShowRestoreWallet(true)}
         onClose={() => setShowMintSettings(false)}
         seedPhrase={seedPhrase}

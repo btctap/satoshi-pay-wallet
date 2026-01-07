@@ -57,17 +57,7 @@ export default function SettingsPage({
 
         <button
           className="primary-btn"
-          onClick={() => {
-            const currentSeed = localStorage.getItem("wallet_seed") || seedPhrase
-            if (!currentSeed || currentSeed.trim() === "") {
-              const newSeed = generateWalletSeed()
-              localStorage.setItem("wallet_seed", newSeed)
-              setSeedPhrase(newSeed)
-            } else {
-              setSeedPhrase(currentSeed)
-            }
-            setTimeout(() => onShowSeedBackup(), 100)
-          }}
+          onClick={onShowSeedBackup}
         >
           📝 View Recovery Phrase
         </button>
