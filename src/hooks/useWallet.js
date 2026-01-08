@@ -17,10 +17,38 @@ import {
   saveCustomMints
 } from '../utils/storage.js'
 
+// OPTIMIZED: Balance caching helpers
+const getCachedBalances = () => {
+  try {
+    const cached = localStorage.getItem('cached_balances')
+    if (cached) {
+      return JSON.parse(cached)
+    }
+  } catch (err) {
+    console.error('Failed to load cached balances:', err)
+  }
+  return null
+}
+
+const setCachedBalances = (balances, total) => {
+  try {
+    localStorage.setItem('cached_balances', JSON.stringify({
+      balances,
+      total,
+      timestamp: Date.now()
+    }))
+  } catch (err) {
+    console.error('Failed to cache balances:', err)
+  }
+}
+
 export const useWallet = () => {
-  // Wallet state
+  // Wallet state - FIXED: Persist selected mint
   const [wallet, setWallet] = useState(null)
-  const [mintUrl, setMintUrl] = useState(DEFAULT_MINTS[0].url)
+  const [mintUrl, setMintUrl] = useState(() => {
+    const saved = localStorage.getItem('selected_mint_url')
+    return saved || DEFAULT_MINTS[0].url
+  })
   const [customMints, setCustomMints] = useState([])
   const [allMints, setAllMints] = useState(DEFAULT_MINTS)
   const [mintInfo, setMintInfo] = useState(null)
@@ -46,6 +74,23 @@ export const useWallet = () => {
 
   // Race condition prevention
   const isInitializing = useRef(false)
+
+  // OPTIMIZED: Load cached balances immediately on mount
+  useEffect(() => {
+    const cached = getCachedBalances()
+    if (cached) {
+      setBalances(cached.balances)
+      setTotalBalance(cached.total)
+      console.log('Loaded cached balances')
+    }
+  }, [])
+
+  // FIXED: Save selected mint when it changes
+  useEffect(() => {
+    if (mintUrl) {
+      localStorage.setItem('selected_mint_url', mintUrl)
+    }
+  }, [mintUrl])
 
   // Initialize wallet
   useEffect(() => {
@@ -115,19 +160,48 @@ export const useWallet = () => {
     }
   }
 
-  const calculateAllBalances = () => {
-    const mintBalances = {}
-    let total = 0
+  // OPTIMIZED: Calculate balances with caching and async execution
+  const calculateAllBalances = (useCache = true) => {
+    // Step 1: Show cached balance immediately if available
+    if (useCache) {
+      const cached = getCachedBalances()
+      if (cached && Date.now() - cached.timestamp < 5000) {
+        setBalances(cached.balances)
+        setTotalBalance(cached.total)
+        console.log('Using cached balances')
+        return
+      }
+    }
 
-    allMints.forEach(mint => {
-      const proofs = getProofsForMint(mint.url, masterKey)
-      const balance = proofs.reduce((sum, p) => sum + (p.amount || 0), 0)
-      mintBalances[mint.url] = balance
-      total += balance
-    })
+    // Step 2: Calculate fresh balances without blocking UI
+    setTimeout(() => {
+      try {
+        const mintBalances = {}
+        let total = 0
 
-    setBalances(mintBalances)
-    setTotalBalance(total)
+        allMints.forEach(mint => {
+          try {
+            const proofs = getProofsForMint(mint.url, masterKey)
+            const balance = proofs.reduce((sum, p) => sum + (p.amount || 0), 0)
+            mintBalances[mint.url] = balance
+            total += balance
+          } catch (err) {
+            console.error(`Error calculating balance for ${mint.name}:`, err)
+            mintBalances[mint.url] = 0
+          }
+        })
+
+        setBalances(mintBalances)
+        setTotalBalance(total)
+        
+        // Cache the new balances
+        setCachedBalances(mintBalances, total)
+        
+        console.log('Balances updated:', total)
+      } catch (err) {
+        console.error('Balance calculation error:', err)
+      }
+    }, 0)
   }
 
   const handleSeedBackupConfirm = () => {
@@ -142,125 +216,122 @@ export const useWallet = () => {
     loadCustomMintsData()
     initWallet()
     loadTxData()
-    calculateAllBalances()
+    calculateAllBalances(false) // Force fresh calculation
   }
 
-  // CORRECTED handleRestoreWallet function for useWallet.js
-// Replace the existing handleRestoreWallet function with this one
+  const handleRestoreWallet = async (restoredSeed) => {
+    try {
+      setLoading(true)
+      setError('')
 
-const handleRestoreWallet = async (restoredSeed) => {
-  try {
-    setLoading(true)
-    setError('')
-    
-    console.log('Starting wallet restoration...')
-    
-    // Step 1: Derive keys from restored seed
-    const seed = deriveMasterKey(restoredSeed)
-    const encKey = deriveEncryptionKey(restoredSeed)
-    
-    // Step 2: Clear old data ONLY from transactions (keep mint URLs for scanning)
-    localStorage.removeItem('cashu_transactions')
-    localStorage.removeItem('pending_tokens')
-    
-    // Step 3: Save new seed
-    localStorage.setItem('wallet_seed', restoredSeed)
-    localStorage.setItem('wallet_backed_up', 'true')
-    setSeedPhrase(restoredSeed)
-    setBip39Seed(seed)
-    setMasterKey(encKey)
-    
-    // Step 4: Load mints (both default and custom)
-    loadCustomMintsData()
-    
-    // Step 5: Initialize wallet with new seed
-    const mint = new CashuMint(mintUrl)
-    const newWallet = new CashuWallet(mint, { bip39seed: seed })
-    setWallet(newWallet)
-    
-    console.log('Wallet initialized with restored seed')
-    
-    // Step 6: CRITICAL - Restore proofs from all mints
-    console.log('Scanning mints for tokens...')
-    
-    let totalRestored = 0
-    const allMintsToScan = [...DEFAULT_MINTS, ...customMints]
-    
-    for (const mintToScan of allMintsToScan) {
-      try {
-        console.log(`Scanning ${mintToScan.name}...`)
-        
-        const scanMint = new CashuMint(mintToScan.url)
-        const scanWallet = new CashuWallet(scanMint, { bip39seed: seed })
-        
-        // Get mint info to check keysets
-        const info = await scanMint.getInfo()
-        
-        if (info?.nuts?.['7']?.supported) {
-          // NUT-07: Token state check - Restore by checking state
-          try {
-            // Try to restore tokens by deriving keys and checking with mint
-            // This uses the deterministic derivation from the seed
-            const keysetIds = info.keysets || []
-            
-            for (const keysetId of keysetIds) {
-              try {
-                // Derive proofs for this keyset
-                // The wallet will automatically derive correct keys from seed
-                const keyset = await scanMint.getKeys(keysetId)
-                
-                // Check if we have any proofs for this keyset
-                // By trying to restore from the deterministic path
-                const restoredProofs = await scanWallet.restore(0, 5, { keysetId })
-                
-                if (restoredProofs && restoredProofs.length > 0) {
-                  // Save restored proofs
-                  const key = `cashu_proofs_${btoa(mintToScan.url)}`
-                  const existing = JSON.parse(localStorage.getItem(key) || '[]')
-                  const combined = [...existing, ...restoredProofs]
-                  localStorage.setItem(key, JSON.stringify(combined))
-                  
-                  const amount = restoredProofs.reduce((sum, p) => sum + p.amount, 0)
-                  totalRestored += amount
-                  
-                  console.log(`Restored ${amount} sats from ${mintToScan.name}`)
+      console.log('Starting wallet restoration...')
+
+      // Step 1: Derive keys from restored seed
+      const seed = deriveMasterKey(restoredSeed)
+      const encKey = deriveEncryptionKey(restoredSeed)
+
+      // Step 2: Clear old data ONLY from transactions (keep mint URLs for scanning)
+      localStorage.removeItem('cashu_transactions')
+      localStorage.removeItem('pending_tokens')
+      localStorage.removeItem('cached_balances') // Clear cached balances
+
+      // Step 3: Save new seed
+      localStorage.setItem('wallet_seed', restoredSeed)
+      localStorage.setItem('wallet_backed_up', 'true')
+      setSeedPhrase(restoredSeed)
+      setBip39Seed(seed)
+      setMasterKey(encKey)
+
+      // Step 4: Load mints (both default and custom)
+      loadCustomMintsData()
+
+      // Step 5: Initialize wallet with new seed
+      const mint = new CashuMint(mintUrl)
+      const newWallet = new CashuWallet(mint, { bip39seed: seed })
+      setWallet(newWallet)
+
+      console.log('Wallet initialized with restored seed')
+
+      // Step 6: CRITICAL - Restore proofs from all mints
+      console.log('Scanning mints for tokens...')
+
+      let totalRestored = 0
+      const allMintsToScan = [...DEFAULT_MINTS, ...customMints]
+
+      for (const mintToScan of allMintsToScan) {
+        try {
+          console.log(`Scanning ${mintToScan.name}...`)
+
+          const scanMint = new CashuMint(mintToScan.url)
+          const scanWallet = new CashuWallet(scanMint, { bip39seed: seed })
+
+          // Get mint info to check keysets
+          const info = await scanMint.getInfo()
+
+          if (info?.nuts?.['7']?.supported) {
+            // NUT-07: Token state check - Restore by checking state
+            try {
+              // Try to restore tokens by deriving keys and checking with mint
+              // This uses the deterministic derivation from the seed
+              const keysetIds = info.keysets || []
+
+              for (const keysetId of keysetIds) {
+                try {
+                  // Derive proofs for this keyset
+                  // The wallet will automatically derive correct keys from seed
+                  const keyset = await scanMint.getKeys(keysetId)
+
+                  // Check if we have any proofs for this keyset
+                  // By trying to restore from the deterministic path
+                  const restoredProofs = await scanWallet.restore(0, 5, { keysetId })
+
+                  if (restoredProofs && restoredProofs.length > 0) {
+                    // Save restored proofs
+                    const key = `cashu_proofs_${btoa(mintToScan.url)}`
+                    const existing = JSON.parse(localStorage.getItem(key) || '[]')
+                    const combined = [...existing, ...restoredProofs]
+                    localStorage.setItem(key, JSON.stringify(combined))
+
+                    const amount = restoredProofs.reduce((sum, p) => sum + p.amount, 0)
+                    totalRestored += amount
+
+                    console.log(`Restored ${amount} sats from ${mintToScan.name}`)
+                  }
+                } catch (keysetErr) {
+                  // Keyset might not have our tokens, continue
+                  console.log(`No tokens in keyset ${keysetId}`)
                 }
-              } catch (keysetErr) {
-                // Keyset might not have our tokens, continue
-                console.log(`No tokens in keyset ${keysetId}`)
               }
+            } catch (restoreErr) {
+              console.log(`Could not restore from ${mintToScan.name}:`, restoreErr.message)
             }
-          } catch (restoreErr) {
-            console.log(`Could not restore from ${mintToScan.name}:`, restoreErr.message)
+          } else {
+            console.log(`${mintToScan.name} does not support NUT-07 restore`)
           }
-        } else {
-          console.log(`${mintToScan.name} does not support NUT-07 restore`)
-        }
-        
-      } catch (mintErr) {
-        console.log(`Error scanning ${mintToScan.name}:`, mintErr.message)
-        // Continue with other mints
-      }
-    }
-    
-    // Step 7: Recalculate balances with restored proofs
-    calculateAllBalances()
-    
-    console.log(`Wallet restoration complete. Restored ${totalRestored} sats total.`)
-    
-    setSuccess(`Wallet restored successfully! Found ${totalRestored} sats.`)
-    setTimeout(() => setSuccess(''), 5000)
-    
-    setLoading(false)
-    
-  } catch (err) {
-    console.error('Restoration error:', err)
-    setError(`Restoration failed: ${err.message}`)
-    setLoading(false)
-    throw err
-  }
-}
 
+        } catch (mintErr) {
+          console.log(`Error scanning ${mintToScan.name}:`, mintErr.message)
+          // Continue with other mints
+        }
+      }
+
+      // Step 7: Recalculate balances with restored proofs
+      calculateAllBalances(false) // Force fresh calculation
+
+      console.log(`Wallet restoration complete. Restored ${totalRestored} sats total.`)
+
+      setSuccess(`Wallet restored successfully! Found ${totalRestored} sats.`)
+      setTimeout(() => setSuccess(''), 5000)
+
+      setLoading(false)
+
+    } catch (err) {
+      console.error('Restoration error:', err)
+      setError(`Restoration failed: ${err.message}`)
+      setLoading(false)
+      throw err
+    }
+  }
 
   const loadCustomMintsData = () => {
     const custom = loadCustomMints()
@@ -298,7 +369,8 @@ const handleRestoreWallet = async (restoredSeed) => {
     const targetMint = specificMint || mintUrl
     const key = `cashu_proofs_${btoa(targetMint)}`
     localStorage.removeItem(key)
-    calculateAllBalances()
+    localStorage.removeItem('cached_balances') // Clear cache
+    calculateAllBalances(false) // Force fresh calculation
   }
 
   const loadTxData = () => {
@@ -335,6 +407,7 @@ const handleRestoreWallet = async (restoredSeed) => {
     addTransaction,
     updateTransactionStatus,
     seedPhrase,
+    setSeedPhrase,
     isNewWallet,
     showSeedBackup,
     setShowSeedBackup,
@@ -355,3 +428,4 @@ const handleRestoreWallet = async (restoredSeed) => {
     setSuccess
   }
 }
+
