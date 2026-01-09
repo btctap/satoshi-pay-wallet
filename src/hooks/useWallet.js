@@ -44,6 +44,10 @@ export const useWallet = () => {
     return snapshot?.total || 0
   })
 
+  // NEW: Track when balance was last loaded to prevent premature clearing
+  const balanceLoadTime = useRef(Date.now())
+  const MIN_DISPLAY_TIME = 30000 // 30 seconds
+
   // Transactions
   const [transactions, setTransactions] = useState([])
 
@@ -83,8 +87,10 @@ export const useWallet = () => {
         loadCustomMintsData()
         initWallet()
         loadTxData()
-        // Recalculate balance in background
-        calculateAllBalances()
+        // Recalculate balance in background after minimum display time
+        setTimeout(() => {
+          calculateAllBalances()
+        }, MIN_DISPLAY_TIME)
       } else {
         const newSeed = generateWalletSeed()
         setSeedPhrase(newSeed)
@@ -103,13 +109,19 @@ export const useWallet = () => {
     }
   }, [mintUrl, bip39Seed])
 
-// NEW: Calculate balance when masterKey is ready
-useEffect(() => {
-  if (masterKey && allMints.length > 0) {
-    console.log('🔑 MasterKey ready, calculating balance...')
-    calculateAllBalances()
-  }
-}, [masterKey, allMints])
+  // NEW: Calculate balance when masterKey is ready (but only after minimum display time)
+  useEffect(() => {
+    if (masterKey && allMints.length > 0) {
+      const timeSinceLoad = Date.now() - balanceLoadTime.current
+      const delay = Math.max(0, MIN_DISPLAY_TIME - timeSinceLoad)
+      
+      console.log(`🔑 MasterKey ready, calculating balance in ${delay}ms...`)
+      
+      setTimeout(() => {
+        calculateAllBalances()
+      }, delay)
+    }
+  }, [masterKey, allMints])
 
   const initWallet = async () => {
     if (isInitializing.current) {
@@ -135,7 +147,7 @@ useEffect(() => {
       }
 
       setWallet(newWallet)
-      calculateAllBalances()
+      // Don't calculate immediately - let the cached balance show
     } catch (err) {
       console.error('Wallet init error:', err)
       setError(`Failed to connect to mint: ${err.message}`)
@@ -165,10 +177,10 @@ useEffect(() => {
 
       setBalances(mintBalances)
       setTotalBalance(total)
-      
+
       // Save to balance DB
       saveBalanceSnapshot(total, mintBalances)
-      
+
       console.log('✅ Balances calculated and saved:', total)
     } catch (err) {
       console.error('Balance calculation error:', err)
@@ -187,7 +199,10 @@ useEffect(() => {
     loadCustomMintsData()
     initWallet()
     loadTxData()
-    calculateAllBalances()
+    // Calculate after minimum display time
+    setTimeout(() => {
+      calculateAllBalances()
+    }, MIN_DISPLAY_TIME)
   }
 
   const handleRestoreWallet = async (restoredSeed) => {
@@ -340,10 +355,10 @@ useEffect(() => {
   }
 
   const getProofs = (url) => getProofsForMint(url, masterKey)
-  
+
   const saveProofs = (url, proofs) => {
     saveProofsForMint(url, proofs, masterKey)
-    // Mark balance as stale, will recalculate on next render
+    // Mark balance as stale, will recalculate immediately (user action)
     markBalanceStale()
     calculateAllBalances()
   }
@@ -384,4 +399,3 @@ useEffect(() => {
     setSuccess
   }
 }
-
