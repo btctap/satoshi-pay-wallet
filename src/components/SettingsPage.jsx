@@ -3,6 +3,7 @@ import { Settings, Lock, RefreshCw, Lightbulb, AlertTriangle, CheckCircle, FileT
 import { DEFAULT_MINTS } from '../utils/cashu.js'
 import { generateWalletSeed } from '../utils/cashu.js'
 import { loadSeedPhrase, saveSeedPhrase } from '../utils/storage.js'
+import { CURRENCIES, getSelectedCurrency, setSelectedCurrency } from '../utils/price.js'
 import NostrSettings from './NostrSettings.jsx'
 import MintSwap from './MintSwap.jsx'
 
@@ -20,7 +21,6 @@ export default function SettingsPage({
   onShowRestoreWallet,
   onBack,
   setSuccess,
-  // Swap props
   wallet,
   masterKey,
   bip39Seed,  
@@ -28,7 +28,6 @@ export default function SettingsPage({
   saveProofs,
   addTransaction,
   setError,
-  // Legacy props for compatibility
   onMintSwitch,
   onAddMint,
   onRemoveMint,
@@ -42,9 +41,9 @@ export default function SettingsPage({
   const [newMintUrl, setNewMintUrl] = useState('')
   const [showNostrSettings, setShowNostrSettings] = useState(false)
   const [showSwap, setShowSwap] = useState(false)
+  const [selectedCurr, setSelectedCurr] = useState(getSelectedCurrency())
 
   const handleAddMint = () => {
-    // Use new prop if available, fallback to legacy
     const addMintFn = addCustomMint || onAddMint
     const success = addMintFn(newMintName, newMintUrl)
     if (success) {
@@ -73,7 +72,7 @@ export default function SettingsPage({
   const handleResetMint = () => {
     const mintName = allMints.find(m => m.url === mintUrl)?.name || 'this mint'
     
-    if (confirm(`⚠️ Reset ${mintName}?\n\nThis will clear ${currentMintBalance} sats from this mint.\n\nThis cannot be undone!`)) {
+    if (confirm(`Reset ${mintName}?\n\nThis will clear ${currentMintBalance} sats from this mint.\n\nThis cannot be undone!`)) {
       if (resetMint) {
         resetMint()
         setSuccess && setSuccess(`${mintName} reset!`)
@@ -101,7 +100,13 @@ export default function SettingsPage({
     }
   }
 
-  // Render Nostr settings
+  const handleCurrencyChange = (currency) => {
+    setSelectedCurrency(currency)
+    setSelectedCurr(currency)
+    setSuccess && setSuccess(`Currency changed to ${currency}`)
+    setTimeout(() => setSuccess && setSuccess(''), 2000)
+  }
+
   if (showNostrSettings) {
     return (
       <NostrSettings
@@ -110,7 +115,6 @@ export default function SettingsPage({
     )
   }
 
-  // Render Swap page
   if (showSwap) {
     return (
       <MintSwap
@@ -133,10 +137,9 @@ export default function SettingsPage({
     <div className="app">
       <header>
         <button className="back-btn" onClick={handleClose}>← Back</button>
-        <h1>⚙️ Settings</h1>
+        <h1>Settings</h1>
       </header>
 
-      {/* Backup & Restore Section */}
       <div className="card" style={{ borderColor: '#FFD700' }}>
         <h3 style={{ color: '#FFD700', display: 'flex', alignItems: 'center', gap: '0.5em' }}>
           <Lock size={20} /> Wallet Backup
@@ -171,9 +174,55 @@ export default function SettingsPage({
         </div>
       </div>
 
-      {/* Nostr Integration Section */}
+      <div className="card" style={{ borderColor: '#FF8C00' }}>
+        <h3 style={{ color: '#FF8C00' }}>Currency Display</h3>
+        <p style={{ fontSize: '0.9em', marginBottom: '1em', opacity: 0.8 }}>
+          Choose your preferred currency for balance display
+        </p>
+
+        <label style={{ 
+          display: 'block', 
+          fontSize: '0.85em', 
+          opacity: 0.7, 
+          marginBottom: '0.5em' 
+        }}>
+          Select Currency
+        </label>
+        <select
+          value={selectedCurr}
+          onChange={(e) => handleCurrencyChange(e.target.value)}
+          style={{
+            width: '100%',
+            padding: '0.8em',
+            borderRadius: '8px',
+            border: '1px solid rgba(255, 255, 255, 0.2)',
+            background: 'rgba(255, 255, 255, 0.05)',
+            color: 'white',
+            fontSize: '1em',
+            marginBottom: '0.5em'
+          }}
+        >
+          {Object.entries(CURRENCIES).map(([code, info]) => (
+            <option key={code} value={code}>
+              {info.symbol} {info.name} ({code})
+            </option>
+          ))}
+        </select>
+
+        <div style={{
+          marginTop: '1em',
+          padding: '0.8em',
+          background: 'rgba(255, 140, 0, 0.1)',
+          borderRadius: '8px',
+          fontSize: '0.85em',
+          lineHeight: '1.5'
+        }}>
+          <Lightbulb size={14} style={{ display: 'inline', verticalAlign: 'middle', marginRight: '0.3em' }} /> Tap the small text below your balance on the home screen to switch between sats and fiat display
+        </div>
+      </div>
+
       <div className="card" style={{ borderColor: '#8B5CF6' }}>
-        <h3 style={{ color: '#8B5CF6' }}>🟣 Advanced Features</h3>
+        <h3 style={{ color: '#8B5CF6' }}>Advanced Features</h3>
 
         <button
           className="settings-btn"
@@ -196,7 +245,6 @@ export default function SettingsPage({
         </button>
       </div>
 
-      {/* Mint Selection */}
       <div className="card">
         <h3>Select Mint</h3>
         <p style={{ fontSize: '0.85em', marginBottom: '1em', opacity: 0.7 }}>
@@ -243,7 +291,6 @@ export default function SettingsPage({
           + Add Mint
         </button>
 
-        {/* SWAP BUTTON */}
         <button 
           className="secondary-btn" 
           onClick={() => setShowSwap(true)} 
@@ -261,7 +308,6 @@ export default function SettingsPage({
         </button>
       </div>
 
-      {/* Add Mint Form */}
       {showAddMint && (
         <div className="card">
           <h3>Add New Mint</h3>
@@ -285,9 +331,8 @@ export default function SettingsPage({
         </div>
       )}
 
-      {/* Danger Zone */}
       <div className="card" style={{ borderColor: '#ff6b6b' }}>
-        <h3 style={{ color: '#ff6b6b' }}>⚠️ Danger Zone</h3>
+        <h3 style={{ color: '#ff6b6b' }}>Danger Zone</h3>
         <p style={{ fontSize: '0.9em', marginBottom: '1em', opacity: 0.8 }}>
           Reset the current mint if you have corrupted tokens.
         </p>
