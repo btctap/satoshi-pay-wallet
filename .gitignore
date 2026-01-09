@@ -6,3 +6,4 @@ dist/
 # Documentation files
 *.md
 !README.md
+.vercel
