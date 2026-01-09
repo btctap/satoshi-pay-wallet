@@ -89,7 +89,7 @@ export default function NostrSettings({ onClose }) {
     <div className="app">
       <header>
         <button className="back-btn" onClick={onClose}>← Back</button>
-        <h1>🟣 Nostr Integration</h1>
+        <h1>🟣 Nostr</h1>
       </header>
 
       {error && <div className="error">{error}</div>}

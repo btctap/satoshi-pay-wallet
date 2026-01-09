@@ -163,3 +163,12 @@ export const loadCustomMints = () => {
 export const saveCustomMints = (customMints) => {
   localStorage.setItem('custom_mints', JSON.stringify(customMints))
 }
+
+// Seed phrase storage
+export const saveSeedPhrase = (seedPhrase) => {
+  localStorage.setItem('wallet_seed', seedPhrase)
+}
+
+export const loadSeedPhrase = () => {
+  return localStorage.getItem('wallet_seed') || ''
+}

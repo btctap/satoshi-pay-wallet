@@ -54,6 +54,7 @@ function App() {
     handleSeedBackupConfirm,
     handleRestoreWallet,
     bip39Seed,
+    masterKey,
     addCustomMint,
     removeCustomMint,
     resetMint,
@@ -86,7 +87,7 @@ function App() {
   // QR Scanner
   const [showScanner, setShowScanner] = useState(false)
   const [scanMode, setScanMode] = useState(null)
-  const [scannedData, setScannedData] = useState(null) // NEW: Store scanned data
+  const [scannedData, setScannedData] = useState(null)
 
   // Mint/Receive state
   const [mintAmount, setMintAmount] = useState('')
@@ -179,12 +180,11 @@ function App() {
     return () => clearInterval(interval)
   }, [wallet, allMints, bip39Seed, getProofs, saveProofs, calculateAllBalances, addTransaction])
 
-  // Handle QR scan - UPDATED
+  // Handle QR scan
   const handleScan = async (data) => {
     setShowScanner(false)
 
     try {
-      // Add safety check
       if (!data || typeof data !== 'string') {
         setError('Invalid scan data')
         setTimeout(() => setError(''), 4000)
@@ -194,16 +194,13 @@ function App() {
       const cleanData = data.trim()
       const dataLower = cleanData.toLowerCase()
 
-      // Store the scanned data
       setScannedData(cleanData)
 
-      // Check for Cashu token
       if (dataLower.startsWith('cashu')) {
         setShowReceivePage(true)
         return
       }
 
-      // Check for Lightning invoice
       if (dataLower.startsWith('lnbc') ||
           dataLower.startsWith('lntb') ||
           dataLower.startsWith('lnbcrt') ||
@@ -212,19 +209,16 @@ function App() {
         return
       }
 
-      // Check for Lightning with prefix
       if (dataLower.includes('lightning:')) {
         setShowSendPage(true)
         return
       }
 
-      // Check for Cashu with prefix
       if (dataLower.includes('cashu:')) {
         setShowReceivePage(true)
         return
       }
 
-      // Check for Lightning Address
       if (cleanData.includes('@') && cleanData.includes('.') && !cleanData.includes(' ')) {
         setShowSendPage(true)
         return
@@ -372,7 +366,7 @@ function App() {
     )
   }
 
-  // Render settings page
+  // Render settings page - UPDATED WITH SWAP PROPS
   if (showMintSettings) {
     return (
       <SettingsPage
@@ -380,10 +374,10 @@ function App() {
         mintUrl={mintUrl}
         balances={balances}
         currentMintBalance={currentMintBalance}
-        onMintSwitch={setMintUrl}
-        onAddMint={addCustomMint}
-        onRemoveMint={removeCustomMint}
-        onResetMint={handleResetMint}
+        setMintUrl={setMintUrl}
+        addCustomMint={addCustomMint}
+        removeCustomMint={removeCustomMint}
+        resetMint={handleResetMint}
         onShowSeedBackup={() => {
           const currentSeed = localStorage.getItem('wallet_seed')
           if (currentSeed && currentSeed !== seedPhrase) {
@@ -392,14 +386,22 @@ function App() {
           setShowSeedBackup(true)
         }}
         onShowRestoreWallet={() => setShowRestoreWallet(true)}
-        onClose={() => setShowMintSettings(false)}
+        onBack={() => setShowMintSettings(false)}
         seedPhrase={seedPhrase}
         setSeedPhrase={setSeedPhrase}
+        setSuccess={setSuccess}
+        // NEW: Swap-related props
+        wallet={wallet}
+        masterKey={masterKey}
+        getProofs={getProofs}
+        saveProofs={saveProofs}
+        addTransaction={addTransaction}
+        setError={setError}
       />
     )
   }
 
-  // Render send page - UPDATED
+  // Render send page
   if (showSendPage) {
     return (
       <SendPage
@@ -423,7 +425,7 @@ function App() {
         setLoading={setLoading}
         onClose={() => {
           setShowSendPage(false)
-          setScannedData(null) // Clear scanned data
+          setScannedData(null)
           calculateAllBalances()
         }}
         onScanRequest={(mode) => {
@@ -434,7 +436,7 @@ function App() {
     )
   }
 
-  // Render receive page - UPDATED
+  // Render receive page
   if (showReceivePage) {
     return (
       <ReceivePage
@@ -463,7 +465,7 @@ function App() {
         setLoading={setLoading}
         onClose={() => {
           setShowReceivePage(false)
-          setScannedData(null) // Clear scanned data
+          setScannedData(null)
           calculateAllBalances()
         }}
         onScanRequest={(mode) => {
@@ -600,3 +602,4 @@ function App() {
 }
 
 export default App
+

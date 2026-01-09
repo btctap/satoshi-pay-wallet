@@ -1,20 +1,38 @@
 import { useState } from 'react'
-import { Settings, Lock, RefreshCw, Lightbulb, AlertTriangle, CheckCircle, FileText, RotateCcw } from 'lucide-react'
+import { Settings, Lock, RefreshCw, Lightbulb, AlertTriangle, CheckCircle, FileText, RotateCcw, ArrowDownUp } from 'lucide-react'
 import { DEFAULT_MINTS } from '../utils/cashu.js'
 import { generateWalletSeed } from '../utils/cashu.js'
+import { loadSeedPhrase, saveSeedPhrase } from '../utils/storage.js'
 import NostrSettings from './NostrSettings.jsx'
+import MintSwap from './MintSwap.jsx'
 
 export default function SettingsPage({
   allMints,
+  customMints,
   mintUrl,
   balances,
   currentMintBalance,
+  setMintUrl,
+  addCustomMint,
+  removeCustomMint,
+  resetMint,
+  onShowSeedBackup,
+  onShowRestoreWallet,
+  onBack,
+  setSuccess,
+  // Swap props
+  wallet,
+  masterKey,
+  bip39Seed,  
+  getProofs,
+  saveProofs,
+  addTransaction,
+  setError,
+  // Legacy props for compatibility
   onMintSwitch,
   onAddMint,
   onRemoveMint,
   onResetMint,
-  onShowSeedBackup,
-  onShowRestoreWallet,
   onClose,
   seedPhrase,
   setSeedPhrase
@@ -23,13 +41,63 @@ export default function SettingsPage({
   const [newMintName, setNewMintName] = useState('')
   const [newMintUrl, setNewMintUrl] = useState('')
   const [showNostrSettings, setShowNostrSettings] = useState(false)
+  const [showSwap, setShowSwap] = useState(false)
 
   const handleAddMint = () => {
-    const success = onAddMint(newMintName, newMintUrl)
+    // Use new prop if available, fallback to legacy
+    const addMintFn = addCustomMint || onAddMint
+    const success = addMintFn(newMintName, newMintUrl)
     if (success) {
       setNewMintName('')
       setNewMintUrl('')
       setShowAddMint(false)
+    }
+  }
+
+  const handleMintSwitch = (url) => {
+    if (setMintUrl) {
+      setMintUrl(url)
+    } else if (onMintSwitch) {
+      onMintSwitch(url)
+    }
+  }
+
+  const handleRemoveMint = (url) => {
+    if (removeCustomMint) {
+      removeCustomMint(url)
+    } else if (onRemoveMint) {
+      onRemoveMint(url)
+    }
+  }
+
+  const handleResetMint = () => {
+    const mintName = allMints.find(m => m.url === mintUrl)?.name || 'this mint'
+    
+    if (confirm(`⚠️ Reset ${mintName}?\n\nThis will clear ${currentMintBalance} sats from this mint.\n\nThis cannot be undone!`)) {
+      if (resetMint) {
+        resetMint()
+        setSuccess && setSuccess(`${mintName} reset!`)
+        setTimeout(() => setSuccess && setSuccess(''), 3000)
+      } else if (onResetMint) {
+        onResetMint()
+      }
+    }
+  }
+
+  const handleViewRecoveryPhrase = () => {
+    const currentSeed = loadSeedPhrase()
+    if (!currentSeed || currentSeed.trim() === "") {
+      const newSeed = generateWalletSeed()
+      saveSeedPhrase(newSeed)
+    }
+    onShowSeedBackup()
+  }
+
+  const handleClose = () => {
+    if (onBack) {
+      onBack()
+    } else if (onClose) {
+      onClose()
     }
   }
 
@@ -42,10 +110,29 @@ export default function SettingsPage({
     )
   }
 
+  // Render Swap page
+  if (showSwap) {
+    return (
+      <MintSwap
+        allMints={allMints}
+        balances={balances}
+        wallet={wallet}
+        masterKey={masterKey}
+        bip39Seed={bip39Seed}  
+        getProofs={getProofs}
+        saveProofs={saveProofs}
+        addTransaction={addTransaction}
+        onBack={() => setShowSwap(false)}
+        setError={setError}
+        setSuccess={setSuccess}
+      />
+    )
+  }
+
   return (
     <div className="app">
       <header>
-        <button className="back-btn" onClick={onClose}>← Back</button>
+        <button className="back-btn" onClick={handleClose}>← Back</button>
         <h1>⚙️ Settings</h1>
       </header>
 
@@ -60,7 +147,7 @@ export default function SettingsPage({
 
         <button
           className="primary-btn"
-          onClick={onShowSeedBackup}
+          onClick={handleViewRecoveryPhrase}
         >
           <FileText size={16} style={{ display: 'inline', verticalAlign: 'middle', marginRight: '0.3em' }} /> View Recovery Phrase
         </button>
@@ -134,7 +221,7 @@ export default function SettingsPage({
                 <button
                   className="secondary-btn"
                   style={{ padding: '0.4em 0.8em', fontSize: '0.85em', width: 'auto' }}
-                  onClick={() => onMintSwitch(mint.url)}
+                  onClick={() => handleMintSwitch(mint.url)}
                 >
                   Switch
                 </button>
@@ -143,7 +230,7 @@ export default function SettingsPage({
                 <button
                   className="cancel-btn"
                   style={{ padding: '0.4em 0.8em', fontSize: '0.85em', width: 'auto' }}
-                  onClick={() => onRemoveMint(mint.url)}
+                  onClick={() => handleRemoveMint(mint.url)}
                 >
                   Remove
                 </button>
@@ -154,6 +241,23 @@ export default function SettingsPage({
 
         <button className="primary-btn" onClick={() => setShowAddMint(true)} style={{ marginTop: '1em' }}>
           + Add Mint
+        </button>
+
+        {/* SWAP BUTTON */}
+        <button 
+          className="secondary-btn" 
+          onClick={() => setShowSwap(true)} 
+          style={{ 
+            marginTop: '0.5em',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '0.5em',
+            width: '100%'
+          }}
+        >
+          <ArrowDownUp size={18} />
+          Swap Between Mints
         </button>
       </div>
 
@@ -189,7 +293,7 @@ export default function SettingsPage({
         </p>
         <button
           className="cancel-btn"
-          onClick={onResetMint}
+          onClick={handleResetMint}
           style={{ width: '100%' }}
         >
           Reset Current Mint ({currentMintBalance} sats)
@@ -198,3 +302,4 @@ export default function SettingsPage({
     </div>
   )
 }
+
